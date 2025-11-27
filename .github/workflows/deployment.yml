@@ -1,0 +1,63 @@
+name: Deployment Production
+
+on:
+  push:
+    branches:
+     - main
+
+jobs:
+  upload-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    strategy:
+      matrix:
+        lambda:
+          - name: lambda_first
+            ecr_repository: serverless-terraform-lambda_first
+            image_tag: latest
+          - name: lambda_second
+            ecr_repository: serverless-terraform-lambda_second
+            image_tag: release
+
+    env:
+      AWS_REGION: ap-northeast-1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR（ ${{ matrix.lambda.name }} ）
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ matrix.lambda.ecr_repository }}
+          IMAGE_TAG: ${{ matrix.lambda.image_tag }}
+          IMAGE_TAG_GITHUB: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f ./infra/docker/production/${{ matrix.lambda.name }}/Dockerfile .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_GITHUB
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_GITHUB
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # terraform側でlambdaをまだ作成していない場合はコメントアウトしてスキップする
+      - name: Deploy Lambda function with container image（ ${{ matrix.lambda.name }}）
+        uses: aws-actions/aws-lambda-deploy@v1.1.0
+        with:
+          function-name: serverless-terraform-${{ matrix.lambda.name }}
+          package-type: Image  # Required: Indicates container deployment (not zip)
+          image-uri: ${{ steps.build-image.outputs.image }}  # ECR image URI from previous step
+          # Note: handler, runtime, and layers should not be provided for container images

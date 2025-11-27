@@ -60,4 +60,5 @@ jobs:
           function-name: serverless-terraform-${{ matrix.lambda.name }}
           package-type: Image  # Required: Indicates container deployment (not zip)
           image-uri: ${{ steps.build-image.outputs.image }}  # ECR image URI from previous step
+          publish: true
           # Note: handler, runtime, and layers should not be provided for container images

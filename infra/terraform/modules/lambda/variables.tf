@@ -167,7 +167,7 @@ variable "memory_alarm_threshold" {
 # フラグ設定
 variable "use_vpc" {
   type        = bool
-  description = "Lambda を VPC 内で動かすかどうか"
+  description = "Lambda を VPC 内で動かすかどうか（ NAT や VPCendpoint はこのモジュールで管理しないが、どちらかがないと lambda insights が動かない。vpc全体としてどちらを採用するか決める必要がある）"
   default     = false
 }
 

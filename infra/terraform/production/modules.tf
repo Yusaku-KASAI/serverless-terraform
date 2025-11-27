@@ -69,5 +69,6 @@ module "chatbot_channel1" {
   slack_channel_id = local.slack.channel1.channel_id
   sns_topic_arns = [
     module.lambda_first.alarm_sns_topic_arn,
+    module.lambda_second.alarm_sns_topic_arn
   ]
 }

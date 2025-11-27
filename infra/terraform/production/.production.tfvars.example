@@ -1,0 +1,11 @@
+profile                   = "serverless-terraform-production-admin"
+slack_team_id             = "T00000000"
+slack_channel_id          = "C00000000"
+lambda_subnet_ids         = ["value"]
+lambda_security_group_ids = ["value"]
+dlq_arn                   = "value"
+failure_queue_arn         = "value"
+success_queue_arn         = "value"
+queue_main_arn            = "value"
+queue_second_arn          = "value"
+sns_topic_main_arn        = "value"

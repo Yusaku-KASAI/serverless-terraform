@@ -34,6 +34,13 @@ resource "aws_iam_role_policy_attachment" "vpc" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "xray" {
+  count = var.use_xray ? 1 : 0
+
+  role       = aws_iam_role.this.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_role_policy_attachment" "extra" {
   for_each = toset(var.extra_policy_arns)
 

@@ -1,0 +1,54 @@
+services:
+  lambda-first:
+    build:
+      context: .
+      dockerfile: ./infra/docker/development/lambda_first/Dockerfile
+    ports:
+      - "9001:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID="dummy"
+      - AWS_SECRET_ACCESS_KEY="dummy"
+
+  lambda-second:
+    build:
+      context: .
+      dockerfile: ./infra/docker/development/lambda_second/Dockerfile
+    ports:
+      - "9002:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID="dummy"
+      - AWS_SECRET_ACCESS_KEY="dummy"
+
+  python:
+    build:
+      context: .
+      dockerfile: ./infra/docker/development/python/Dockerfile
+    volumes:
+      - ./serverless:/serverless
+      # - ~/.aws:/root/.aws # 手元から本番AWSにpythonでアクセスしたいときだけアンコメント(じゃないと事故りそう)
+    environment:
+      - AWS_ACCESS_KEY_ID="dummy"
+      - AWS_SECRET_ACCESS_KEY="dummy"
+
+  sls-deploy:
+    build:
+      context: .
+      dockerfile: ./infra/docker/development/sls-deploy/Dockerfile
+    platform: linux/amd64
+    volumes:
+      - ./serverless:/serverless
+      - serverless_node_modules:/serverless/node_modules
+      - ~/.aws:/root/.aws
+    tty: true
+
+  claude:
+    build:
+      context: .
+      dockerfile: ./infra/docker/development/claude/Dockerfile
+    volumes:
+      - ./:/home/claude/workspace
+    working_dir: /home/claude/workspace
+    tty: true
+
+volumes:
+  serverless_node_modules:

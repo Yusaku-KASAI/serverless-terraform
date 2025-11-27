@@ -1,0 +1,21 @@
+FROM public.ecr.aws/lambda/python:3.13
+
+# Install CloudWatch Lambda Insights Extension
+RUN curl -O https://lambda-insights-extension-arm64.s3-ap-northeast-1.amazonaws.com/amazon_linux/lambda-insights-extension-arm64.rpm && \
+    rpm -U lambda-insights-extension-arm64.rpm && \
+    rm -f lambda-insights-extension-arm64.rpm
+
+# Copy requirements.txt & Install the specified packages
+COPY ./serverless /build
+RUN pip install --upgrade pip
+
+RUN if [ -f /build/requirements.txt]; then pip install -r /build/requirements.txt; fi
+RUN if [ -f /build/requirements-dev.txt]; then pip install -r /build/requirements-dev.txt; fi
+
+RUN rm -rf /build
+
+# Copy function code
+COPY ./serverless/lambda_first.py ${LAMBDA_TASK_ROOT}
+
+# Set the CMD to your handler (could also be done as a parameter override outside of the Dockerfile)
+CMD [ "lambda_first.handler" ]

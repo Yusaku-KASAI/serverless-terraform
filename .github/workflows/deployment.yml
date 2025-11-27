@@ -54,6 +54,10 @@ jobs:
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       # terraform側でlambdaをまだ作成していない場合はコメントアウトしてスキップする
+      # 新しくバージョンをpublishすることでterraform側と差分が生じるので、
+      # インフラ構成がlambdaのバージョンに依存する場合はこちらではECRへのpushのみ行い、
+      # terraform側でapplyしてlambdaのバージョンを更新する運用にする
+      # （ or terraform側もCICD側もlambdaのバージョンを発行しなければ差分は生じない）
       - name: Deploy Lambda function with container image（ ${{ matrix.lambda.name }}）
         uses: aws-actions/aws-lambda-deploy@v1.1.0
         with:

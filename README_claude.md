@@ -1,0 +1,1001 @@
+# serverless-terraform
+
+AWS Lambda サーバーレス構成を Terraform Modules で完全 IaC 化するプロジェクト
+
+---
+
+## 目次
+
+- [1. プロジェクト概要](#1-プロジェクト概要)
+- [2. プロジェクト構成](#2-プロジェクト構成)
+- [3. システムアーキテクチャ](#3-システムアーキテクチャ)
+- [4. Terraform モジュール詳細](#4-terraform-モジュール詳細)
+- [5. 開発環境（Docker Compose）](#5-開発環境docker-compose)
+- [6. セットアップ手順](#6-セットアップ手順)
+- [7. Lambda コンテナイメージのビルド＆デプロイ](#7-lambda-コンテナイメージのビルドデプロイ)
+- [8. 運用ガイド](#8-運用ガイド)
+- [9. 設計思想と制約](#9-設計思想と制約)
+- [10. 今後の予定](#10-今後の予定)
+
+---
+
+## 1. プロジェクト概要
+
+### 1.1 目的
+
+このリポジトリは、
+**AWS Lambda / API Gateway / Step Functions / Chatbot / SNS / SQS などのサーバーレス構成を Terraform Modules で完全 IaC 化するためのプロジェクト** です。
+
+Serverless Framework を段階的に廃止し、
+**ECR ベースの Lambda 運用 × Terraform 管理 × CI/CD 自動化**
+への統合移行により、**再利用性・拡張性・信頼性の高い運用基盤**の構築を目的としています。
+
+### 1.2 背景と課題
+
+従来、Serverless Framework を利用していましたが、以下の問題がありました：
+
+| 課題 | 詳細 |
+|------|------|
+| **テンプレのコピペ運用** | プロジェクトごとにテンプレートをコピペしており、設定の不整合が発生 |
+| **属人化** | インフラ有識者しか管理できず、ナレッジが共有されない |
+| **CI/CD 不足** | 手元のホストPCや手動デプロイが多く、ミスしやすい |
+| **Serverless Framework の限界** | v3 は Python 3.11 までしかサポートせず EOL、v4 は有料ライセンス |
+| **完結しない構成** | API Gateway + WAF、Chatbot などは Terraform 管理となり、Serverless だけでは完結しない |
+| **起動速度** | Lambda レイヤーより**コンテナイメージの方が起動時間が短い** |
+
+### 1.3 解決策
+
+このプロジェクトでは以下のアプローチで課題を解決します：
+
+| 解決策 | 内容 |
+|--------|------|
+| **ECR ベースの Lambda** | Lambda はすべて Docker コンテナイメージで管理 |
+| **Terraform Modules 化** | Lambda / Chatbot / API Gateway / Step Functions などをモジュール化 |
+| **完全 IaC 化** | インフラ構成をすべて Terraform で管理し、属人化を排除 |
+| **CI/CD 統合** | GitHub Actions で自動デプロイを実現（Docker ビルド → ECR プッシュ → Lambda 更新） |
+
+---
+
+## 2. プロジェクト構成
+
+### 2.1 ディレクトリ構造
+
+```
+.
+├── .github/
+│   └── workflows/
+│       └── deployment.yml          # GitHub Actions（CI/CD、Lambda 自動デプロイ）
+├── .gitignore                      # Git 管理外ファイル設定
+├── docker-compose.yml              # ローカル開発環境
+├── README.md                       # 既存ドキュメント（若干古い）
+├── README2.md                      # Notion からのメモ
+├── README_claude.md                # このファイル（包括的ドキュメント）
+│
+├── infra/
+│   ├── docker/
+│   │   ├── development/            # ローカル開発用 Dockerfile 群
+│   │   │   ├── lambda_first/Dockerfile
+│   │   │   ├── lambda_second/Dockerfile
+│   │   │   ├── python/Dockerfile
+│   │   │   ├── sls-deploy/Dockerfile
+│   │   │   └── claude/Dockerfile   # Claude Code 実行環境
+│   │   └── production/             # 本番環境用 Dockerfile 群
+│   │       ├── lambda_first/Dockerfile
+│   │       └── lambda_second/Dockerfile
+│   │
+│   └── terraform/
+│       ├── modules/                # 再利用可能な Terraform モジュール
+│       │   ├── lambda/             # Lambda + ECR + CloudWatch + IAM + イベント設定
+│       │   │   ├── cloudwatch.tf
+│       │   │   ├── ecr.tf
+│       │   │   ├── event_schedule.tf
+│       │   │   ├── event_sns.tf
+│       │   │   ├── event_sqs.tf
+│       │   │   ├── iam.tf
+│       │   │   ├── iam_destination.tf
+│       │   │   ├── lambda.tf
+│       │   │   ├── outputs.tf
+│       │   │   ├── variables.tf
+│       │   │   └── README.md
+│       │   │
+│       │   └── chatbot/            # AWS Chatbot（Slack 通知）
+│       │       ├── chatbot.tf
+│       │       ├── iam.tf
+│       │       ├── outputs.tf
+│       │       ├── variables.tf
+│       │       └── README.md
+│       │
+│       └── production/             # 本番環境固有の設定
+│           ├── environments.tf     # Lambda 環境変数の定義
+│           ├── flags.tf            # 機能フラグ（VPC、X-Ray など）
+│           ├── import.tf           # Terraform import 用（既存リソース）
+│           ├── locals.tf           # ローカル変数（プロジェクト名、Lambda 設定など）
+│           ├── main.tf             # プロバイダー設定
+│           ├── modules.tf          # モジュール呼び出し
+│           ├── terraform.tf        # Terraform バージョン・バックエンド設定
+│           ├── variables.tf        # 入力変数（Slack、VPC、SQS、SNS など）
+│           ├── terraform.tfstate   # 状態ファイル（本来は S3 管理推奨）
+│           └── terraform.tfstate.backup
+│
+└── serverless/                     # Lambda 関数コード
+    ├── lambda_first.py
+    └── lambda_second.py
+```
+
+### 2.2 各ディレクトリの役割
+
+| ディレクトリ | 役割 |
+|-------------|------|
+| **`.github/workflows/`** | GitHub Actions の CI/CD 定義（main ブランチへの push で Lambda 自動デプロイ） |
+| **`infra/docker/development/`** | ローカル開発用の Dockerfile（Lambda のテスト実行環境など） |
+| **`infra/docker/production/`** | 本番環境用の Lambda コンテナイメージ Dockerfile |
+| **`infra/terraform/modules/`** | 再利用可能な Terraform モジュール（Lambda、Chatbot など） |
+| **`infra/terraform/production/`** | 本番環境固有の Terraform 設定（ここで `terraform apply` を実行） |
+| **`serverless/`** | Lambda 関数の Python コード |
+
+---
+
+## 3. システムアーキテクチャ
+
+### 3.1 全体構成図
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                          AWS Cloud                                │
+│                                                                    │
+│  ┌─────────────┐                                                  │
+│  │ EventBridge │ (スケジュール実行)                                  │
+│  │  Schedule   │──────┐                                           │
+│  └─────────────┘      │                                           │
+│                       ▼                                           │
+│  ┌─────────────┐   ┌──────────────┐   ┌─────────────┐            │
+│  │     SNS     │──>│    Lambda    │   │     ECR     │            │
+│  │   Topic     │   │   Function   │<──│ Repository  │            │
+│  └─────────────┘   └──────────────┘   └─────────────┘            │
+│                       │                      ▲                    │
+│  ┌─────────────┐     │                      │                    │
+│  │     SQS     │─────┘                      │                    │
+│  │    Queue    │                            │ (Docker Push)      │
+│  └─────────────┘                            │                    │
+│                                              │                    │
+│  ┌──────────────┐   ┌─────────────┐         │                    │
+│  │  CloudWatch  │──>│  SNS Alarm  │         │                    │
+│  │    Alarms    │   │    Topic    │         │                    │
+│  └──────────────┘   └─────────────┘         │                    │
+│                         │                    │                    │
+│  ┌──────────────┐      │                    │                    │
+│  │ AWS Chatbot  │<─────┘                    │                    │
+│  │   (Slack)    │                           │                    │
+│  └──────────────┘                           │                    │
+│         │                                    │                    │
+└─────────│────────────────────────────────────│────────────────────┘
+          │                                    │
+          ▼                                    │
+    ┌─────────┐                         ┌──────────────┐
+    │  Slack  │                         │ GitHub       │
+    │ Channel │                         │ Actions      │
+    └─────────┘                         │ (CI/CD)      │
+                                        └──────────────┘
+```
+
+### 3.2 コンポーネント説明
+
+| コンポーネント | 説明 | 管理範囲 |
+|--------------|------|---------|
+| **ECR Repository** | Lambda コンテナイメージの保管場所 | Lambda モジュール |
+| **Lambda Function** | Lambda 本体（コンテナイメージ実行） | Lambda モジュール |
+| **EventBridge Schedule** | cron / rate 形式でのスケジュール実行 | Lambda モジュール |
+| **SNS Topic（イベント）** | Lambda のトリガーとなる SNS トピック | **外部管理**（ARN を入力） |
+| **SQS Queue（イベント）** | Lambda のトリガーとなる SQS キュー | **外部管理**（ARN を入力） |
+| **CloudWatch Logs** | Lambda 実行ログ | Lambda モジュール |
+| **CloudWatch Alarms** | Error / Throttle / Duration / Memory などのアラーム | Lambda モジュール |
+| **SNS Alarm Topic** | アラーム通知用 SNS トピック | Lambda モジュール |
+| **AWS Chatbot** | SNS → Slack 通知 | Chatbot モジュール |
+| **VPC / Subnet / SG** | Lambda の VPC 配置 | **外部管理**（ID を入力） |
+| **DLQ / Destination** | 非同期実行失敗時の送信先 SQS/SNS | **外部管理**（ARN を入力） |
+
+---
+
+## 4. Terraform モジュール詳細
+
+### 4.1 Lambda モジュール（`modules/lambda`）
+
+#### 4.1.1 概要
+
+Lambda 構築に必要な**すべてのリソース**を一括で作成する包括的なモジュールです。
+
+#### 4.1.2 管理するリソース
+
+| リソース | 説明 |
+|---------|------|
+| **ECR Repository** | Lambda コンテナイメージの保管先 |
+| **Lambda Function** | Lambda 本体（コンテナイメージ、JSON ログ、X-Ray 対応） |
+| **Lambda Recursion Config** | 再帰実行の制御（Terminate に設定） |
+| **Lambda Event Invoke Config** | 非同期実行の成功/失敗時の送信先設定 |
+| **IAM Role** | Lambda 実行ロール |
+| **IAM Policy Attachment** | 基本実行ポリシー、VPC ポリシー、Lambda Insights ポリシー |
+| **CloudWatch Log Group** | Lambda のログ保存先（保持期間設定可能） |
+| **CloudWatch Metric Filter** | MemorySize / MaxMemoryUsed の抽出 |
+| **CloudWatch Alarms** | Error / Throttle / Duration / Invocation / Memory アラーム |
+| **SNS Topic（Alarm）** | アラーム通知用の専用トピック |
+| **EventBridge Schedule** | cron / rate 形式のスケジュール実行 |
+| **SNS Subscription** | SNS トピック → Lambda のトリガー設定 |
+| **SQS Event Source Mapping** | SQS → Lambda のイベントソース設定 |
+
+#### 4.1.3 管理しないリソース（外部依存）
+
+| リソース | 理由 |
+|---------|------|
+| **SNS トピック本体** | 複数の Lambda や他サービスから利用されるため、汎用性が高い |
+| **SQS キュー本体** | 同上 |
+| **VPC / Subnet / SG** | Lambda 以外のリソースとも共有されるネットワーク基盤 |
+| **DLQ / Destination SQS/SNS** | 汎用的なキューで、Lambda 専用ではない |
+
+#### 4.1.4 管理しないリソース（上位モジュールが担当）
+
+| リソース | 担当モジュール |
+|---------|--------------|
+| **API Gateway** | `apigateway` モジュール（未実装） |
+| **Step Functions** | `stepfunctions` モジュール（未実装） |
+
+#### 4.1.5 主な変数（`variables.tf`）
+
+| 変数名 | 型 | 説明 | デフォルト |
+|--------|---|------|-----------|
+| `function_name` | string | Lambda 関数名（必須） | - |
+| `ecr_repository_name` | string | ECR リポジトリ名（必須） | - |
+| `image_tag` | string | 使用する ECR イメージタグ | `"latest"` |
+| `memory_size` | number | メモリ（MB） | `512` |
+| `timeout` | number | タイムアウト（秒） | `10` |
+| `storage_size` | number | エフェメラルストレージ（MB） | `512` |
+| `environment_variables` | map(string) | 環境変数 | `{}` |
+| `use_vpc` | bool | VPC 内で実行するか | `false` |
+| `subnet_ids` | list(string) | VPC Subnet IDs | `[]` |
+| `security_group_ids` | list(string) | Security Group IDs | `[]` |
+| `dlq_arn` | string | Dead Letter Queue の ARN | `""` |
+| `destination_on_failure_arn` | string | 失敗時の送信先 ARN | `""` |
+| `destination_on_success_arn` | string | 成功時の送信先 ARN | `""` |
+| `eventbridge_schedules` | list(object) | EventBridge スケジュール定義 | `[]` |
+| `sns_event_sources` | list(object) | SNS トリガー設定 | `[]` |
+| `sqs_event_sources` | list(object) | SQS トリガー設定 | `[]` |
+| `log_retention_in_days` | number | ログ保持日数 | `731` |
+| `error_alarm_threshold` | number | Error アラーム閾値 | `1` |
+| `throttle_alarm_threshold` | number | Throttle アラーム閾値 | `1` |
+| `duration_alarm_threshold` | number | Duration アラーム閾値（ms） | `5000` |
+| `memory_alarm_threshold` | number | Memory 使用率アラーム閾値（%） | `80` |
+| `invocation_alarm_threshold` | number | Invocation アラーム閾値 | `1000` |
+| `use_xray` | bool | X-Ray トレーシングを有効化 | `false` |
+| `extra_policy_arns` | list(string) | 追加の IAM ポリシー ARN | `[]` |
+
+#### 4.1.6 主な出力（`outputs.tf`）
+
+| 出力名 | 説明 |
+|--------|------|
+| `function_name` | Lambda 関数名 |
+| `function_arn` | Lambda 関数 ARN |
+| `function_qualified_arn` | バージョン付き ARN |
+| `function_version` | 最新バージョン番号 |
+| `role_arn` | Lambda 実行ロール ARN |
+| `log_group_name` | CloudWatch Logs ロググループ名 |
+| `ecr_repository_url` | ECR リポジトリ URL |
+| `ecr_repository_arn` | ECR リポジトリ ARN |
+| `alarm_sns_topic_arn` | アラーム通知用 SNS Topic ARN |
+| `cloudwatch_alarm_arns` | 各種アラーム ARN のマップ |
+| `eventbridge_rule_arns` | EventBridge ルール ARN のマップ |
+| `sns_subscription_arns` | SNS サブスクリプション ARN のマップ |
+| `sqs_event_source_mapping_uuids` | SQS イベントソースマッピング UUID のマップ |
+
+---
+
+### 4.2 Chatbot モジュール（`modules/chatbot`）
+
+#### 4.2.1 概要
+
+AWS Chatbot（Slack 連携）を構築し、CloudWatch アラームを Slack チャンネルに通知するモジュールです。
+
+#### 4.2.2 管理するリソース
+
+| リソース | 説明 |
+|---------|------|
+| **Slack Channel Configuration** | Slack ワークスペース/チャンネルと AWS Chatbot の紐付け |
+| **IAM Role** | Chatbot が Assume するロール |
+| **Guardrail Policy** | すべてのアクションを Deny するポリシー（通知専用） |
+
+#### 4.2.3 管理しないリソース
+
+| リソース | 理由 |
+|---------|------|
+| **SNS Topic 本体** | Lambda モジュールなどで作られたアラーム通知用 SNS を受け取る |
+| **Slack App 設定** | Slack 側での AWS Chatbot App のインストールは手動 |
+
+#### 4.2.4 主な変数（`variables.tf`）
+
+| 変数名 | 型 | 説明 | デフォルト |
+|--------|---|------|-----------|
+| `project` | string | プロジェクト識別子 | `""` |
+| `configuration_name` | string | Chatbot 設定名 | `""` |
+| `slack_team_id` | string | Slack Workspace ID（必須） | `""` |
+| `slack_channel_id` | string | Slack Channel ID（必須） | `""` |
+| `sns_topic_arns` | list(string) | 通知する SNS Topic ARN リスト | `[]` |
+| `tags` | map(any) | 共通タグ | `{}` |
+
+#### 4.2.5 主な出力（`outputs.tf`）
+
+| 出力名 | 説明 |
+|--------|------|
+| `configuration_name` | Chatbot 設定名 |
+| `chatbot_slack_channel_arn` | Chatbot ARN |
+| `iam_role_arn` | Chatbot 用 IAM Role ARN |
+| `guardrail_policy_arn` | Guardrail Policy ARN |
+| `slack_team_id` | Slack Workspace ID |
+| `slack_channel_id` | Slack Channel ID |
+| `sns_topic_arns` | 紐付けた SNS Topic ARN 一覧 |
+
+---
+
+### 4.3 未実装モジュール
+
+以下のモジュールは **README2.md に記載されているものの、現時点では未実装** です：
+
+| モジュール | 用途 |
+|----------|------|
+| **API Gateway** | HTTP API → Lambda の連携 |
+| **Step Functions** | Lambda のオーケストレーション |
+
+---
+
+## 5. 開発環境（Docker Compose）
+
+### 5.1 概要
+
+`docker-compose.yml` には、ローカル開発用のコンテナが定義されています。
+
+### 5.2 サービス一覧
+
+| サービス名 | 用途 | ポート |
+|-----------|------|-------|
+| **`lambda-first`** | Lambda（first）のローカル実行テスト | `9001:8080` |
+| **`lambda-second`** | Lambda（second）のローカル実行テスト | `9002:8080` |
+| **`python`** | Python 実行環境（Lambda コード開発用） | - |
+| **`sls-deploy`** | Serverless Framework デプロイ用（移行過渡期） | - |
+| **`claude`** | Claude Code 実行環境 | - |
+
+### 5.3 使い方
+
+#### Lambda のローカル実行
+
+```bash
+# Lambda コンテナを起動
+docker compose up lambda-first
+
+# 別ターミナルから Lambda を呼び出し
+curl -XPOST "http://localhost:9001/2015-03-31/functions/function/invocations" \
+  -d '{"key":"value"}'
+```
+
+#### Python 開発環境
+
+```bash
+# Python コンテナに入る
+docker compose run --rm python bash
+
+# Lambda コードを編集・テスト
+cd /serverless
+python lambda_first.py
+```
+
+---
+
+## 6. セットアップ手順
+
+### 6.1 前提条件
+
+以下がセットアップ済みであることを前提とします：
+
+- **AWS アカウント**
+- **AWS CLI** のインストールと設定（プロファイル設定）
+- **Terraform >= 1.6.0**
+- **Docker** のインストール（コンテナイメージビルド用）
+- **Slack Workspace** と **AWS Chatbot App** の連携設定（任意）
+
+### 6.2 事前に準備する AWS リソース
+
+以下のリソースは **手動で作成** し、ARN や ID を Terraform 変数に入力します：
+
+| リソース | 用途 | 参照先変数 |
+|---------|------|-----------|
+| **VPC / Subnet / Security Group** | Lambda を VPC 内で実行する場合 | `lambda_subnet_ids`, `lambda_security_group_ids` |
+| **SQS Queue（DLQ）** | Lambda の Dead Letter Queue | `dlq_arn` |
+| **SQS Queue（Failure）** | Event Invoke Config の失敗通知先 | `failure_queue_arn` |
+| **SQS Queue（Success）** | Event Invoke Config の成功通知先 | `success_queue_arn` |
+| **SQS Queue（Main）** | Lambda のイベントソース（メイン） | `queue_main_arn` |
+| **SQS Queue（Second）** | Lambda のイベントソース（セカンド） | `queue_second_arn` |
+| **SNS Topic（Main）** | Lambda のイベントソース | `sns_topic_main_arn` |
+| **Slack Team ID / Channel ID** | Chatbot 通知先 | `slack_team_id`, `slack_channel_id` |
+
+### 6.3 Terraform 変数の設定
+
+`infra/terraform/production/.production.tfvars` を作成し、以下のように設定します：
+
+```hcl
+# AWS プロファイル
+profile = "your-aws-profile"
+
+# Slack 通知設定
+slack_team_id    = "TXXXXXXXX"
+slack_channel_id = "CYYYYYYYY"
+
+# VPC 設定（Lambda を VPC 内で実行する場合）
+lambda_subnet_ids         = ["subnet-xxxxxx", "subnet-yyyyyy"]
+lambda_security_group_ids = ["sg-xxxxxx"]
+
+# SQS / SNS ARN
+dlq_arn            = "arn:aws:sqs:ap-northeast-1:111111111111:your-dlq"
+failure_queue_arn  = "arn:aws:sqs:ap-northeast-1:111111111111:your-failure-queue"
+success_queue_arn  = "arn:aws:sqs:ap-northeast-1:111111111111:your-success-queue"
+queue_main_arn     = "arn:aws:sqs:ap-northeast-1:111111111111:your-main-queue"
+queue_second_arn   = "arn:aws:sqs:ap-northeast-1:111111111111:your-second-queue"
+sns_topic_main_arn = "arn:aws:sns:ap-northeast-1:111111111111:your-main-topic"
+```
+
+### 6.4 Terraform 実行手順
+
+#### 1. Terraform 初期化
+
+```bash
+cd infra/terraform/production
+terraform init
+```
+
+#### 2. Terraform フォーマット確認（任意）
+
+```bash
+terraform fmt -recursive
+```
+
+#### 3. Terraform 検証
+
+```bash
+terraform validate
+```
+
+#### 4. Terraform Plan
+
+```bash
+terraform plan -var-file=".production.tfvars"
+```
+
+#### 5. Terraform Apply
+
+```bash
+terraform apply -var-file=".production.tfvars"
+```
+
+### 6.5 GitHub Actions の設定（CI/CD 用）
+
+CI/CD を有効にするには、GitHub リポジトリに以下の Secrets を設定します。
+
+#### 6.5.1 必要な Secret
+
+| Secret 名 | 説明 | 取得方法 |
+|----------|------|---------|
+| `AWS_ROLE_TO_ASSUME` | GitHub Actions が Assume する IAM Role の ARN | AWS IAM で OIDC プロバイダーと Role を作成 |
+
+#### 6.5.2 AWS IAM Role の作成（OIDC 認証）
+
+GitHub Actions から AWS にアクセスするため、OIDC 認証用の IAM Role を作成します。
+
+**1. OIDC プロバイダーの作成**
+
+AWS Console → IAM → ID プロバイダー → プロバイダーを追加
+
+- プロバイダーのタイプ: `OpenID Connect`
+- プロバイダーの URL: `https://token.actions.githubusercontent.com`
+- 対象者: `sts.amazonaws.com`
+
+**2. IAM Role の作成**
+
+以下のような信頼ポリシーを持つ Role を作成します：
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:your-org/serverless-terraform:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
+```
+
+**3. 必要な権限ポリシーをアタッチ**
+
+以下の権限が必要です：
+
+- ECR へのプッシュ権限
+- Lambda 関数の更新権限
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:PutImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:UpdateFunctionCode",
+        "lambda:GetFunctionConfiguration"
+      ],
+      "Resource": "arn:aws:lambda:ap-northeast-1:111111111111:function:serverless-terraform-*"
+    }
+  ]
+}
+```
+
+#### 6.5.3 GitHub Secrets の設定
+
+GitHub リポジトリ → Settings → Secrets and variables → Actions → New repository secret
+
+- Name: `AWS_ROLE_TO_ASSUME`
+- Secret: `arn:aws:iam::111111111111:role/serverless-terraform-prod_ci_deploy`
+
+---
+
+## 7. Lambda コンテナイメージのビルド＆デプロイ
+
+### 7.1 手動デプロイ手順
+
+#### 7.1.1 Docker イメージのビルド
+
+```bash
+# lambda_first のビルド
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  -t 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_first:latest \
+  -f ./infra/docker/production/lambda_first/Dockerfile .
+
+# lambda_second のビルド
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  -t 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_second:latest \
+  -f ./infra/docker/production/lambda_second/Dockerfile .
+```
+
+#### 7.1.2 ECR ログイン
+
+```bash
+aws ecr get-login-password --profile your-profile \
+  | docker login --username AWS --password-stdin 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com
+```
+
+#### 7.1.3 ECR Push
+
+```bash
+docker push 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_first:latest
+docker push 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_second:latest
+```
+
+#### 7.1.4 Lambda の更新
+
+Terraform で `image_tag` を変更して再 apply するか、以下のコマンドで Lambda を更新します：
+
+```bash
+aws lambda update-function-code \
+  --function-name serverless-terraform-lambda_first \
+  --image-uri 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_first:latest \
+  --profile your-profile
+```
+
+### 7.2 CI/CD（GitHub Actions）
+
+`.github/workflows/deployment.yml` には Lambda 用の CI/CD パイプラインが実装されています。
+
+#### 7.2.1 ワークフローの概要
+
+| 項目 | 内容 |
+|------|------|
+| **トリガー** | `main` ブランチへの push |
+| **実行環境** | `ubuntu-latest` |
+| **並列実行** | Matrix Strategy で複数 Lambda を並列処理 |
+| **AWS 認証** | OIDC（OpenID Connect）による安全な認証 |
+
+#### 7.2.2 処理フロー
+
+```
+1. main ブランチへの push
+   ↓
+2. Checkout（ソースコード取得）
+   ↓
+3. AWS 認証（OIDC）
+   ↓
+4. ECR ログイン
+   ↓
+5. Docker イメージのビルド
+   ├─ lambda_first  (タグ: latest, GitHub SHA)
+   └─ lambda_second (タグ: release, GitHub SHA)
+   ↓
+6. ECR へプッシュ
+   ↓
+7. Lambda 関数の更新
+   ├─ serverless-terraform-lambda_first
+   └─ serverless-terraform-lambda_second
+```
+
+#### 7.2.3 Matrix Strategy による並列実行
+
+複数の Lambda 関数を並列でビルド・デプロイします：
+
+```yaml
+strategy:
+  matrix:
+    lambda:
+      - name: lambda_first
+        ecr_repository: serverless-terraform-lambda_first
+        image_tag: latest
+      - name: lambda_second
+        ecr_repository: serverless-terraform-lambda_second
+        image_tag: release
+```
+
+#### 7.2.4 イメージタグの管理
+
+各 Lambda イメージには **2 つのタグ** が付与されます：
+
+| タグ | 用途 |
+|------|------|
+| **指定タグ**（`latest` / `release`） | Terraform で参照するタグ |
+| **GitHub SHA** | コミット単位のトレーサビリティ確保 |
+
+例：
+```
+111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_first:latest
+111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_first:a1b2c3d4
+```
+
+#### 7.2.5 新しい Lambda 関数を CI/CD に追加する方法
+
+`.github/workflows/deployment.yml` の `matrix` セクションに追加します：
+
+```yaml
+strategy:
+  matrix:
+    lambda:
+      - name: lambda_first
+        ecr_repository: serverless-terraform-lambda_first
+        image_tag: latest
+      - name: lambda_second
+        ecr_repository: serverless-terraform-lambda_second
+        image_tag: release
+      # 新しい Lambda を追加
+      - name: lambda_third
+        ecr_repository: serverless-terraform-lambda_third
+        image_tag: latest
+```
+
+#### 7.2.6 注意事項
+
+- **Terraform で Lambda を先に作成**: ワークフローの Step 7（Lambda 関数の更新）は、Terraform で Lambda が作成済みであることが前提です。Lambda が未作成の場合は、このステップをコメントアウトしてください。
+- **IAM Role の権限**: GitHub Actions が使用する IAM Role には、ECR プッシュと Lambda 更新の権限が必要です（セクション 6.5.2 参照）
+
+---
+
+## 8. 運用ガイド
+
+### 8.1 新しい Lambda 関数の追加
+
+#### 8.1.1 Lambda コードの作成
+
+```bash
+# serverless ディレクトリに新しい Lambda 関数を作成
+vi serverless/lambda_third.py
+```
+
+```python
+import json
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def handler(event, context):
+    logger.info("Event: %s", json.dumps(event))
+    logger.info("Third!")
+    return {"statusCode": 200, "body": "Hello from Lambda Third!"}
+```
+
+#### 8.1.2 Dockerfile の作成
+
+```bash
+# 本番環境用の Dockerfile を作成
+vi infra/docker/production/lambda_third/Dockerfile
+```
+
+```dockerfile
+FROM public.ecr.aws/lambda/python:3.13
+
+# Install CloudWatch Lambda Insights Extension
+RUN curl -O https://lambda-insights-extension.s3-ap-northeast-1.amazonaws.com/amazon_linux/lambda-insights-extension.rpm && \
+    rpm -U lambda-insights-extension.rpm && \
+    rm -f lambda-insights-extension.rpm
+
+# Copy requirements.txt & Install the specified packages
+COPY ./serverless /build
+RUN pip install --upgrade pip
+RUN if [ -f /build/requirements.txt]; then pip install -r /build/requirements.txt; fi
+RUN rm -rf /build
+
+# Copy function code
+COPY ./serverless/lambda_third.py ${LAMBDA_TASK_ROOT}
+
+# Set the CMD to your handler
+CMD [ "lambda_third.handler" ]
+```
+
+#### 8.1.3 Terraform 設定の追加
+
+`infra/terraform/production/locals.tf` に Lambda 設定を追加：
+
+```hcl
+locals {
+  # ...既存設定...
+
+  lambda_third = {
+    function_name       = "${local.project}-lambda_third"
+    ecr_repository_name = "${local.project}-lambda_third"
+  }
+}
+```
+
+`infra/terraform/production/modules.tf` にモジュール呼び出しを追加：
+
+```hcl
+module "lambda_third" {
+  source = "../modules/lambda"
+
+  project = local.project
+
+  function_name       = local.lambda_third.function_name
+  ecr_repository_name = local.lambda_third.ecr_repository_name
+}
+```
+
+#### 8.1.4 デプロイ
+
+```bash
+# Terraform でインフラを作成
+cd infra/terraform/production
+terraform apply -var-file=".production.tfvars"
+
+# Docker イメージをビルド＆プッシュ
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  -t 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_third:latest \
+  -f ./infra/docker/production/lambda_third/Dockerfile .
+
+docker push 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terraform-lambda_third:latest
+```
+
+**CI/CD を使う場合：**
+
+上記の手動デプロイではなく、`.github/workflows/deployment.yml` の `matrix` に追加すれば、`main` ブランチへの push で自動デプロイされます（セクション 7.2.5 参照）。
+
+---
+
+### 8.2 環境変数の設定
+
+`infra/terraform/production/environments.tf` で Lambda の環境変数を管理します：
+
+```hcl
+locals {
+  lambda_environments = {
+    lambda_first = {
+      APP_NAME      = local.project
+      FUNCTION_NAME = local.lambda_first.function_name
+      DB_HOST       = "https://example.com"
+    }
+    lambda_second = {
+      APP_NAME      = local.project
+      FUNCTION_NAME = local.lambda_second.function_name
+      API_KEY       = "your-api-key"
+    }
+  }
+}
+```
+
+その後、`modules.tf` でモジュールに渡します：
+
+```hcl
+module "lambda_first" {
+  source = "../modules/lambda"
+
+  # ...他の設定...
+  environment_variables = local.lambda_environments.lambda_first
+}
+```
+
+---
+
+### 8.3 アラームの調整
+
+`infra/terraform/production/locals.tf` でアラーム閾値を調整します：
+
+```hcl
+locals {
+  lambda_second = {
+    # ...他の設定...
+    error_alarm_threshold      = 5      # Error が 5 回以上で通知
+    throttle_alarm_threshold   = 3      # Throttle が 3 回以上で通知
+    memory_alarm_threshold     = 90     # メモリ使用率 90% 以上で通知
+    duration_alarm_threshold   = 20000  # 実行時間 20 秒以上で通知
+    invocation_alarm_threshold = 10000  # 実行回数 10000 回以上で通知
+  }
+}
+```
+
+---
+
+### 8.4 VPC / X-Ray の有効化
+
+`infra/terraform/production/flags.tf` で機能フラグを管理します：
+
+```hcl
+locals {
+  flags = {
+    lambda_second = {
+      use_vpc  = true   # VPC 内で実行
+      use_xray = true   # X-Ray トレーシングを有効化
+    }
+  }
+}
+```
+
+---
+
+## 9. 設計思想と制約
+
+### 9.1 モジュールの責務分離
+
+| 設計原則 | 説明 |
+|---------|------|
+| **Lambda モジュール** | Lambda の構築・監視・イベント設定を包括的に管理 |
+| **Chatbot モジュール** | アラーム通知を Slack に送信 |
+| **外部依存** | VPC / SNS / SQS などの汎用リソースは外部で管理 |
+| **上位モジュール** | API Gateway / Step Functions は Lambda より上位の概念として別モジュール化 |
+
+### 9.2 依存関係の管理
+
+依存関係を **上下関係** で整理し、循環依存を防止します：
+
+```
+┌─────────────────────┐
+│  API Gateway        │  ← 上位モジュール（Lambda を呼び出す側）
+│  Step Functions     │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Lambda Module      │  ← 中心モジュール
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  VPC / SNS / SQS    │  ← 下位リソース（汎用基盤）
+└─────────────────────┘
+```
+
+### 9.3 制約事項
+
+| 制約 | 理由 |
+|------|------|
+| **S3 トリガーは非推奨** | S3 は 1 通知設定しか持てないため、SNS 経由を推奨 |
+| **VPC / SNS / SQS は外部管理** | 複数の Lambda やサービスで共有されるため |
+| **Terraform State はローカル** | 現在は `terraform.tfstate` がローカルに保存されているが、**本来は S3 バックエンド推奨** |
+
+---
+
+## 10. 今後の予定
+
+### 10.1 完了済み
+
+| 項目 | 完了日 | 説明 |
+|------|-------|------|
+| **Lambda モジュール** | ✅ | ECR + Lambda + CloudWatch + IAM + イベント設定の完全モジュール化 |
+| **Chatbot モジュール** | ✅ | Slack 通知の自動化 |
+| **CI/CD の整備** | ✅ | GitHub Actions による自動デプロイ（Docker ビルド → ECR プッシュ → Lambda 更新） |
+
+### 10.2 実装予定
+
+| 項目 | 優先度 | 説明 |
+|------|-------|------|
+| **API Gateway モジュール** | 高 | HTTP API → Lambda の連携を Terraform 化 |
+| **Step Functions モジュール** | 高 | Lambda のオーケストレーションを Terraform 化 |
+| **Terraform Backend の S3 化** | 中 | State ファイルを S3 に保存し、複数人での運用を可能に |
+| **Staging 環境の分離** | 中 | `production` と `staging` ディレクトリを分ける |
+| **CloudWatch Dashboard** | 低 | 監視ダッシュボードの自動構築 |
+| **Datadog 連携** | 低 | Datadog による統合監視 |
+
+### 10.3 技術的負債
+
+| 項目 | 対応予定 |
+|------|---------|
+| **Terraform State の共有** | S3 バックエンド + DynamoDB ロックの設定 |
+| **Secrets 管理** | AWS Secrets Manager / Parameter Store との連携 |
+| **Terraform の変数管理** | 環境変数や機密情報を `.tfvars` ファイルから分離 |
+
+---
+
+## 補足
+
+### 参考リンク
+
+- [Terraform AWS Lambda Module（公式）](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function)
+- [AWS Lambda コンテナイメージ（公式）](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)
+- [AWS Chatbot（公式）](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
+
+### トラブルシューティング
+
+#### Terraform で ECR イメージが見つからないエラー
+
+```
+Error: error creating Lambda Function: InvalidParameterValueException:
+The image with imageId 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/...:latest does not exist
+```
+
+**原因**: ECR にイメージがプッシュされていない
+
+**対応**: 先に Docker イメージをビルド＆プッシュしてから `terraform apply` を実行
+
+#### Lambda が VPC 内で起動しない
+
+**原因**: Subnet や Security Group の設定が不正
+
+**対応**:
+- Subnet は **プライベートサブネット** を指定
+- NAT Gateway / VPC Endpoint が設定されているか確認
+- Security Group でアウトバウンド通信が許可されているか確認
+
+#### CloudWatch Alarms が発火しない
+
+**原因**: アラーム閾値が高すぎる、または SNS サブスクリプションが未設定
+
+**対応**:
+- `locals.tf` でアラーム閾値を調整
+- Chatbot モジュールが正しく SNS Topic を購読しているか確認
+
+---
+
+## ライセンス
+
+このプロジェクトは社内プロジェクトであり、ライセンスは未定義です。
+
+---
+
+以上が、`serverless-terraform` プロジェクトの包括的なドキュメントです。

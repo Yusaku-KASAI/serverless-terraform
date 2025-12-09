@@ -66,9 +66,6 @@ locals {
     stage_name  = "production"
     domain_name = var.apigateway_second_domain_name
 
-    access_log_retention_in_days    = 30
-    execution_log_retention_in_days = 30
-
     enable_api_key = true
     usage_plan_throttle = {
       rate_limit  = 50
@@ -77,6 +74,16 @@ locals {
     usage_plan_quota = {
       limit  = 100000
       period = "MONTH"
+    }
+
+    access_log_retention_in_days    = 30
+    execution_log_retention_in_days = 30
+
+    stage_alarm_config = {
+      five_xx_error_threshold = 1
+      # four_xx_error_threshold = 5
+      latency_threshold_ms = 1000
+      count_threshold      = 10
     }
 
     lambda_proxy_methods = {

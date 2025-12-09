@@ -116,13 +116,15 @@ module "apigateway_second" {
   usage_plan_throttle = local.apigateway_second.usage_plan_throttle
   usage_plan_quota    = local.apigateway_second.usage_plan_quota
 
-  access_log_retention_in_days    = local.apigateway_second.access_log_retention_in_days
-  execution_log_retention_in_days = local.apigateway_second.execution_log_retention_in_days
-
   enable_custom_domain = local.flags.apigateway_second.enable_custom_domain
   domain_name          = local.apigateway_second.domain_name
   acm_certificate_arn  = var.apigateway_second_acm_arn
   zone_id              = var.host_zone_id
+
+  access_log_retention_in_days    = local.apigateway_second.access_log_retention_in_days
+  execution_log_retention_in_days = local.apigateway_second.execution_log_retention_in_days
+  use_xray                        = local.flags.apigateway_second.use_xray
+  stage_alarm_config              = local.apigateway_second.stage_alarm_config
 
   lambda_proxy_methods = [
     for method_key, method_val in local.apigateway_second.lambda_proxy_methods :
@@ -149,6 +151,7 @@ module "chatbot_channel1" {
   slack_channel_id = local.slack.channel1.channel_id
   sns_topic_arns = [
     module.lambda_first.alarm_sns_topic_arn,
-    module.lambda_second.alarm_sns_topic_arn
+    module.lambda_second.alarm_sns_topic_arn,
+    module.apigateway_second.alarm_sns_topic_arn,
   ]
 }

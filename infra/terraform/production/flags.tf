@@ -12,6 +12,7 @@ locals {
 
     apigateway_second = {
       enable_custom_domain = true
+      use_xray             = true
     }
   }
 }

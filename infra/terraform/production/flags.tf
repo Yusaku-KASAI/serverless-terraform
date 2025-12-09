@@ -5,5 +5,13 @@ locals {
       use_vpc  = true
       use_xray = true
     }
+
+    apigateway_first = {
+      enable_custom_domain = true
+    }
+
+    apigateway_second = {
+      enable_custom_domain = true
+    }
   }
 }

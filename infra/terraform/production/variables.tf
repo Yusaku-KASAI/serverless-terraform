@@ -49,3 +49,29 @@ variable "sns_topic_main_arn" {
   description = "メイン SNS トピックの ARN"
   type        = string
 }
+
+variable "host_zone_id" {
+  description = "Route53 Hosted Zone ID"
+  type        = string
+}
+
+variable "apigateway_first_domain_name" {
+  description = "1つめのapigatewayのドメイン名"
+  type        = string
+}
+
+variable "apigateway_first_acm_arn" {
+  description = "1つめのapigatewayに紐付けるACMのarn"
+  type        = string
+}
+
+variable "apigateway_second_domain_name" {
+  description = "2つめのapigatewayのドメイン名"
+  type        = string
+}
+
+variable "apigateway_second_acm_arn" {
+  description = "2つめのapigatewayに紐付けるACMのarn"
+  type        = string
+}
+

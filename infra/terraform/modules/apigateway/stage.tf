@@ -33,6 +33,8 @@ resource "aws_api_gateway_stage" "this" {
   deployment_id = aws_api_gateway_deployment.this.id
   description   = "Stage for ${var.stage_name}"
 
+  xray_tracing_enabled = var.use_xray
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.access_logs.arn
     format = jsonencode({

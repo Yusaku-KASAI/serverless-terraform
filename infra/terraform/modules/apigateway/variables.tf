@@ -54,19 +54,6 @@ variable "usage_plan_quota" {
   }
 }
 
-# ログまわり
-variable "access_log_retention_in_days" {
-  type        = number
-  description = "アクセスログの保持日数"
-  default     = 731
-}
-
-variable "execution_log_retention_in_days" {
-  type        = number
-  description = "実行ログの保持日数"
-  default     = 731
-}
-
 # カスタムドメイン（基本カスタムにしたい、cookie周りとかがちょい不安なので）
 variable "enable_custom_domain" {
   type        = bool
@@ -139,4 +126,35 @@ variable "sqs_methods" {
   }))
   description = "AWSのSQSと非プロキシ統合で動作するメソッドたちの定義"
   default     = []
+}
+
+
+# 監視・トレーシングまわり
+variable "access_log_retention_in_days" {
+  type        = number
+  description = "アクセスログの保持日数"
+  default     = 731
+}
+
+variable "execution_log_retention_in_days" {
+  type        = number
+  description = "実行ログの保持日数"
+  default     = 731
+}
+
+variable "stage_alarm_config" {
+  type = object({
+    five_xx_error_threshold = optional(number, null)
+    four_xx_error_threshold = optional(number, null)
+    latency_threshold_ms    = optional(number, null)
+    count_threshold         = optional(number, null)
+  })
+  description = "ステージ全体のアラーム閾値設定"
+  default     = {}
+}
+
+variable "use_xray" {
+  type        = bool
+  description = "X-Ray トレーシングを有効にするかどうか"
+  default     = false
 }

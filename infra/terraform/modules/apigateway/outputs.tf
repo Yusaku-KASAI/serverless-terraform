@@ -64,3 +64,8 @@ output "resource_ids" {
     { for p, r in aws_api_gateway_resource.level4 : p => r.id }
   )
 }
+
+output "alarm_sns_topic_arn" {
+  description = "APIgateway アラーム通知用 SNS Topic ARN"
+  value       = aws_sns_topic.alarm.arn
+}

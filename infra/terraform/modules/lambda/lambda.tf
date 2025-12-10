@@ -10,7 +10,7 @@ resource "aws_lambda_function" "this" {
   memory_size                    = var.memory_size
   timeout                        = var.timeout
   architectures                  = ["x86_64"]
-  reserved_concurrent_executions = -1
+  reserved_concurrent_executions = var.reserved_concurrent_executions
 
   environment {
     variables = var.environment_variables

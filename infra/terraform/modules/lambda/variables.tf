@@ -65,6 +65,12 @@ variable "environment_variables" {
   default     = {}
 }
 
+variable "reserved_concurrent_executions" {
+  type        = number
+  description = "lambda の最大同時実行数"
+  default     = -1
+}
+
 # VPC 設定
 variable "subnet_ids" {
   type        = list(string)

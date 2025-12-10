@@ -1,43 +1,117 @@
-
 # Chatbot Module (Terraform)
 
-このディレクトリは **AWS Chatbot（Slack 連携）** を Terraform で構築・管理するためのモジュールです。
+このディレクトリは **AWS Chatbot（Slack 連携）を Terraform で構築・管理するためのモジュール** です。
 
-- Slack のワークスペース / チャンネルと AWS Chatbot を紐付ける
-- SNS Topic からの通知を Slack に流す
-- ChatOps コマンドは一切許可せず、**通知専用（権限 deny-all）** として利用する
+SNS Topic からの通知を Slack に流し、CloudWatch アラーム → SNS → Chatbot → Slack という監視フローを簡単に構築できます。
+ChatOps コマンドは一切許可せず、**通知専用（権限 deny-all）** として利用します。
 
-他のモジュール（例：`lambda` モジュールのアラーム SNS Topic）と組み合わせることで、  
-CloudWatch アラーム → SNS → Chatbot → Slack 通知 という監視フローを簡単に構築できます。
+他のモジュール（例：Lambda、API Gateway）のアラーム SNS Topic と組み合わせることで、
+**サーバーレスアーキテクチャの監視を完全 IaC 化するための基盤** となります。
+
+---
+
+## 📌 目的
+
+AWS Chatbot の構築・管理をリポジトリ横断で統一し、
+監視アラートの Slack 通知を標準化するために設計された Terraform モジュールです。
+
+### このモジュールが解決する主なポイント
+
+* CloudWatch アラームの Slack 通知を Terraform で自動化し、手動設定を排除
+* 複数の SNS Topic を一つの Slack チャンネルに集約し、監視を一元管理
+* ChatOps コマンドを完全に無効化し、セキュリティリスクを最小化
+* プロジェクト単位で Chatbot を簡単に量産できる命名規則を提供
 
 ---
 
 ## 📁 構成
 
-```txt
+```
 modules/
   chatbot/
-    chatbot.tf
-    iam.tf
-    variables.tf
-    outputs.tf
-    README.md
-````
-
-### ファイル概要
-
-| ファイル           | 内容                                                             |
-| -------------- | -------------------------------------------------------------- |
-| `chatbot.tf`   | Slack チャンネルと紐付いた `aws_chatbot_slack_channel_configuration` の作成 |
-| `iam.tf`       | Chatbot 用 IAM Role と guardrail（deny-all）ポリシーの作成                |
-| `variables.tf` | モジュールに渡す入力変数                                                   |
-| `outputs.tf`   | 他モジュールから参照するための出力値                                             |
+    chatbot.tf     # Slack チャンネルと紐付いた Chatbot Configuration
+    iam.tf         # Chatbot 用 IAM Role と guardrail（deny-all）ポリシー
+    variables.tf   # 入力変数
+    outputs.tf     # 出力値
+    README.md      # このファイル
+```
 
 ---
 
-## 🎯 このモジュールが行うこと
+## 📝 設計ポリシー
 
-### ✔ 管理するもの
+### 基本方針
+
+* **通知専用の Chatbot** として利用する前提
+  - IAM ポリシーは `Deny *:*` をアタッチし、ChatOps のコマンド実行は完全に防止
+  - セキュリティリスクを最小化し、通知機能に特化
+* 複数の SNS Topic を 1 つの Slack チャンネルへ集約可能
+  - 監視用 SNS（例：Lambda モジュールのアラーム）を束ねる用途を想定
+  - マイクロサービス単位のアラームを 1 つのチャンネルで一元管理
+* 名前付けは `project` をベースに自動生成可能
+  - プロジェクト単位の Chatbot を簡単に量産できる
+  - 明示的な命名も可能で柔軟性を確保
+
+### モジュールの制約・設計方針
+
+このモジュールは、セキュリティを重視した通知専用の設計になっています。以下の制約を理解した上でご利用ください。
+
+#### Slack チャンネルとの対応
+
+* **モジュール一つにつき Slack チャンネル一つ**
+  - 複数の Slack チャンネルに通知する場合は、モジュールを複数作成
+  - チャンネルごとに通知する SNS Topic を変えることで、アラートの種類を分離可能
+
+#### 通知専用の制約
+
+* **ChatOps コマンドは完全に無効化（Guardrail: deny-all）**
+  - Slack から AWS リソースを操作することは不可
+  - セキュリティリスクを最小化するため、通知機能のみに特化
+  - Guardrail ポリシーで全ての AWS API アクションを Deny
+
+**Guardrail ポリシーの内容：**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+#### 事前準備が必要
+
+* **Slack Workspace ID と Channel ID は事前設定が必要**
+  - AWS Console で Slack Workspace と AWS Chatbot の連携を事前に実施
+  - Slack チャンネルを作成し、Channel ID を取得
+  - これらの情報を変数として渡す
+
+#### SNS Topic の管理
+
+* **SNS Topic 本体はこのモジュールでは管理しない**
+  - Lambda モジュールや API Gateway モジュールで作成された SNS Topic の ARN を受け取る
+  - 複数の SNS Topic を一つの Slack チャンネルに集約可能
+
+#### 命名規則
+
+* **Configuration Name は自動生成または明示指定**
+  - `configuration_name` 未指定時は `${project}-chatbot-slack` が自動生成
+  - 明示指定も可能で、プロジェクト固有の命名規則に対応
+
+#### IAM Role の信頼ポリシー
+
+* **`chatbot.amazonaws.com` からの AssumeRole のみを許可**
+  - 他のサービスからの Assume を防止
+
+---
+
+## 🏷 管理範囲
+
+### ✔ 管理する（このモジュールで作成される）
 
 #### Chatbot Configuration
 * **`aws_chatbot_slack_channel_configuration`**
@@ -55,18 +129,44 @@ modules/
   - **通知専用**として運用し、ChatOps コマンドの実行を完全に防止
   - Guardrail ポリシーとして Chatbot Configuration にアタッチ
 
-### ✖ 管理しないもの
+### ✖ 管理しない（外部で管理）
 
 | リソース | 理由 |
 |---------|------|
 | **Slack App の設定** | AWS Console で Slack Workspace と AWS Chatbot の連携を事前に実施する必要がある |
 | **SNS Topic 本体** | Lambda モジュールなどで作られる監視用 SNS Topic を ARN で受け取る |
 | **Slack Channel の作成** | Slack 側で事前にチャンネルを作成し、Channel ID を取得する |
-| **ChatOps 用の追加権限** | このモジュールは通知専用（deny-all）のため、ChatOps 機能は提供しない |
 
 ---
 
-## 🔧 使い方（Usage）
+## 📋 変数（Variables）
+
+### 必須変数（実質）
+
+以下の変数は、デフォルト値が空文字列ですが、**実質的に必須**です。
+
+| 変数名 | 型 | 説明 |
+|--------|---|------|
+| `slack_team_id` | `string` | 通知先 Slack Workspace ID（例: `TXXXXXXXX`）<br>AWS Console で Slack 連携時に取得 |
+| `slack_channel_id` | `string` | 通知先 Slack Channel ID（例: `CYYYYYYYY`）<br>Slack チャンネルの詳細画面から取得 |
+
+### Chatbot 設定
+
+| 変数名 | 型 | デフォルト | 説明 |
+|--------|---|-----------|------|
+| `configuration_name` | `string` | `""` | Chatbot 設定名<br>未指定時は `${project}-chatbot-slack` が自動生成される |
+| `sns_topic_arns` | `list(string)` | `[]` | この Chatbot に通知する SNS Topic の ARN リスト<br>複数の SNS Topic を 1 つの Slack チャンネルに集約可能 |
+
+### メタ情報
+
+| 変数名 | 型 | デフォルト | 説明 |
+|--------|---|-----------|------|
+| `project` | `string` | `""` | プロジェクト識別子<br>`configuration_name` 未指定時の名前生成に使用 |
+| `tags` | `map(any)` | `{}` | リソースに付与するタグ |
+
+---
+
+## 🧪 使用例（Usage Examples）
 
 ### 前提条件
 
@@ -233,51 +333,6 @@ module "chatbot_custom_name" {
 
 ---
 
-## 🔣 変数（Variables）
-
-### 必須変数（実質）
-
-以下の変数は、デフォルト値が空文字列ですが、**実質的に必須**です。
-
-| 変数名 | 型 | 説明 |
-|--------|---|------|
-| `slack_team_id` | `string` | 通知先 Slack Workspace ID（例: `TXXXXXXXX`）<br>AWS Console で Slack 連携時に取得 |
-| `slack_channel_id` | `string` | 通知先 Slack Channel ID（例: `CYYYYYYYY`）<br>Slack チャンネルの詳細画面から取得 |
-
-### Chatbot 設定
-
-| 変数名 | 型 | デフォルト | 説明 |
-|--------|---|-----------|------|
-| `configuration_name` | `string` | `""` | Chatbot 設定名<br>未指定時は `${project}-chatbot-slack` が自動生成される |
-| `sns_topic_arns` | `list(string)` | `[]` | この Chatbot に通知する SNS Topic の ARN リスト<br>複数の SNS Topic を 1 つの Slack チャンネルに集約可能 |
-
-### メタ情報
-
-| 変数名 | 型 | デフォルト | 説明 |
-|--------|---|-----------|------|
-| `project` | `string` | `""` | プロジェクト識別子<br>`configuration_name` 未指定時の名前生成に使用 |
-| `tags` | `map(any)` | `{}` | リソースに付与するタグ |
-
-### `configuration_name` の自動生成ロジック
-
-`configuration_name` が未指定の場合、以下のロジックで自動生成されます：
-
-```hcl
-locals {
-  configuration_name = (
-    var.configuration_name != "" ?
-    var.configuration_name :
-    "${var.project}-chatbot-slack"
-  )
-}
-```
-
-**例：**
-- `project = "sample"`, `configuration_name = ""` → `sample-chatbot-slack`
-- `configuration_name = "my-config"` → `my-config`（明示指定が優先）
-
----
-
 ## 📤 出力（Outputs）
 
 ### Chatbot Configuration
@@ -315,9 +370,9 @@ locals {
 # 作成された Chatbot の設定を確認
 output "chatbot_config" {
   value = {
-    name         = module.chatbot_alarm.configuration_name
-    arn          = module.chatbot_alarm.chatbot_slack_channel_arn
-    slack_team   = module.chatbot_alarm.slack_team_name
+    name          = module.chatbot_alarm.configuration_name
+    arn           = module.chatbot_alarm.chatbot_slack_channel_arn
+    slack_team    = module.chatbot_alarm.slack_team_name
     slack_channel = module.chatbot_alarm.slack_channel_name
   }
 }
@@ -336,157 +391,28 @@ resource "aws_cloudwatch_event_target" "chatbot" {
 
 ---
 
-## 📝 設計ポリシー
-
-### 基本方針
-
-* **通知専用の Chatbot** として利用する前提
-  - IAM ポリシーは `Deny *:*` をアタッチし、ChatOps のコマンド実行は完全に防止
-  - セキュリティリスクを最小化し、通知機能に特化
-* 複数の SNS Topic を 1 つの Slack チャンネルへ集約可能
-  - 監視用 SNS（例：Lambda モジュールのアラーム）を束ねる用途を想定
-  - マイクロサービス単位の Lambda アラームを 1 つのチャンネルで一元管理
-* 名前付けは `project` をベースに自動生成可能
-  - プロジェクト単位の Chatbot を簡単に量産できる
-  - 明示的な命名も可能で柔軟性を確保
-
-### モジュールの制約・設計方針
-
-このモジュールは、セキュリティを重視した通知専用の設計になっています。以下の制約を理解した上でご利用ください。
-
-#### Slack チャンネルとの対応
-
-* **モジュール一つにつき Slack チャンネル一つ**
-  - 複数の Slack チャンネルに通知する場合は、モジュールを複数作成
-  - チャンネルごとに通知する SNS Topic を変えることで、アラートの種類を分離可能
-
-#### 通知専用の制約
-
-* **ChatOps コマンドは完全に無効化（Guardrail: deny-all）**
-  - Slack から AWS リソースを操作することは不可
-  - セキュリティリスクを最小化するため、通知機能のみに特化
-  - Guardrail ポリシーで全ての AWS API アクションを Deny
-
-#### 事前準備が必要
-
-* **Slack Workspace ID と Channel ID は事前設定が必要**
-  - AWS Console で Slack Workspace と AWS Chatbot の連携を事前に実施
-  - Slack チャンネルを作成し、Channel ID を取得
-  - これらの情報を変数として渡す
-
-#### SNS Topic の管理
-
-* **SNS Topic 本体はこのモジュールでは管理しない**
-  - Lambda モジュールや API Gateway モジュールで作成された SNS Topic の ARN を受け取る
-  - 複数の SNS Topic を一つの Slack チャンネルに集約可能
-
-#### 命名規則
-
-* **Configuration Name は自動生成または明示指定**
-  - `configuration_name` 未指定時は `${project}-chatbot-slack` が自動生成
-  - 明示指定も可能で、プロジェクト固有の命名規則に対応
-
-#### Workspace と Channel の取得
-
-* **Slack Workspace 名と Channel 名は AWS が自動取得**
-  - Output で `slack_team_name` と `slack_channel_name` を出力
-  - Terraform 側で名前を指定する必要はなし（ID のみ指定）
-
-### 実装の特徴
-
-#### Guardrail ポリシー（deny-all）
-- すべての AWS API アクションを Deny するポリシーを Guardrail として設定
-- Slack からの ChatOps コマンド（例: `@aws lambda list-functions`）を実行できないように制限
-- 通知の受信のみに機能を限定し、意図しない操作を防止
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Deny",
-      "Action": "*",
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-#### IAM Role の信頼ポリシー
-- `chatbot.amazonaws.com` からの AssumeRole のみを許可
-- 他のサービスからの Assume を防止
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "chatbot.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-```
-
-#### 複数 SNS Topic の集約
-- `sns_topic_arns` にリストで複数の SNS Topic ARN を指定可能
-- 例：複数の Lambda、RDS、EC2 のアラームを 1 つの Slack チャンネルに集約
-- チャンネル単位でアラートを管理し、通知の見落としを防止
-
-#### 自動命名による運用効率化
-- `configuration_name` 未指定時は `${project}-chatbot-slack` が自動生成
-- プロジェクト単位で Chatbot を簡単に作成・管理可能
-- 一貫性のある命名規則でリソースを識別しやすく
-
----
-
 ## 🔗 関連モジュール
 
-このモジュールは、主に以下のモジュールと組み合わせて利用される想定です。
+> ※ 各モジュールの詳細は、それぞれの README を参照してください。
 
 ### 実装済みモジュール
 
-* **`modules/lambda`** ✅
+* **`lambda`** ✅
   - CloudWatch アラーム + SNS Topic を自動作成
   - Lambda のエラー、スロットル、メモリ使用率などを監視
   - Chatbot モジュールと組み合わせて Slack 通知を実現
   - 詳細: [modules/lambda/README.md](../lambda/README.md)
 
-* **`modules/apigateway`** ✅
+* **`apigateway`** ✅
   - API Gateway 単位のアラーム（レイテンシ、エラー率など）を SNS に送信
   - Chatbot で API の異常を Slack 通知
   - 詳細: [modules/apigateway/README.md](../apigateway/README.md)
 
-### 未実装モジュール（今後の予定）
+### 未実装モジュール
 
-* **`modules/stepfunctions`** 🔄
+* **`stepfunctions`** 🔄
   - Step Functions ステートマシンのアラーム（実行失敗、タイムアウトなど）を SNS に送信
   - Chatbot でワークフローの異常を Slack 通知
-
-### 使用例：Lambda モジュールとの連携
-
-```hcl
-# Lambda モジュール（アラーム SNS Topic を作成）
-module "lambda_payment" {
-  source = "./modules/lambda"
-  # ...
-}
-
-# Chatbot モジュール（SNS Topic を Slack に通知）
-module "chatbot_alerts" {
-  source = "./modules/chatbot"
-
-  slack_team_id    = "TXXXXXXXX"
-  slack_channel_id = "CYYYYYYYY"
-
-  sns_topic_arns = [
-    module.lambda_payment.alarm_sns_topic_arn,
-  ]
-}
-```
 
 ---
 
@@ -495,3 +421,5 @@ module "chatbot_alerts" {
 - [AWS Chatbot 公式ドキュメント](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
 - [Terraform AWS Chatbot Slack Channel Configuration](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/chatbot_slack_channel_configuration)
 - [Slack Channel ID の取得方法](https://slack.com/intl/ja-jp/help/articles/221769328-Slack-%E3%83%81%E3%83%A3%E3%83%B3%E3%83%8D%E3%83%AB%E3%81%AE-ID-%E3%82%92%E8%A6%8B%E3%81%A4%E3%81%91%E3%82%8B)
+
+---

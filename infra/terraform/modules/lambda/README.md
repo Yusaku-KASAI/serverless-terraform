@@ -28,37 +28,122 @@ Lambda の作成・更新・管理をリポジトリ横断で統一し、
 ```
 modules/
   lambda/
-    cloudwatch.tf
-    ecr.tf
-    event_schedule.tf
-    event_sns.tf
-    event_sqs.tf
-    iam.tf
-    iam_destination.tf
-    lambda.tf
-    variables.tf
-    outputs.tf
-    README.md
+    lambda.tf              # Lambda 本体、再帰実行設定、Invoke Config
+    iam.tf                 # Lambda 実行ロール・基本ポリシー設定
+    iam_destination.tf     # DLQ / Destination 用の IAM ポリシー設定
+    ecr.tf                 # ECR リポジトリ
+    cloudwatch.tf          # LogGroup、MetricFilter、アラーム、SNS Topic
+    event_schedule.tf      # EventBridge スケジュールトリガー
+    event_sns.tf           # SNS → Lambda トリガー
+    event_sqs.tf           # SQS → Lambda イベントソースマッピング + IAM
+    variables.tf           # 入力変数
+    outputs.tf             # 出力値
+    README.md              # このファイル
 ```
-
-### ファイル概要
-
-| ファイル                | 内容                                   |
-| ------------------- | ------------------------------------ |
-| `lambda.tf`         | Lambda 本体、再帰実行設定、Invoke Config       |
-| `iam.tf`            | Lambda 実行ロール・基本ポリシー設定                  |
-| `iam_destination.tf` | DLQ / Destination 用の IAM ポリシー設定 |
-| `ecr.tf`            | ECR リポジトリ                            |
-| `cloudwatch.tf`     | LogGroup、MetricFilter、アラーム、SNS Topic |
-| `event_schedule.tf` | EventBridge スケジュールトリガー               |
-| `event_sns.tf`      | SNS → Lambda トリガー                    |
-| `event_sqs.tf`      | SQS → Lambda イベントソースマッピング + IAM       |
-| `variables.tf`      | 入力変数                                 |
-| `outputs.tf`        | 出力値                                  |
 
 ---
 
-## 🏷 このモジュールが管理する範囲
+## 📝 設計ポリシー
+
+### 基本方針
+
+* Lambda の「構築」「実行環境」「監視」「イベント」までを一括提供し、**再利用性と統一性を最大化**
+* Event Source の境界は「依存関係の上下関係」で区分
+  - 例：SNS/SQS のような "汎用メッセージ基盤" → Lambda にトリガー設定 **する**
+  - 例：API Gateway / Step Functions のような "Lambda の上層" → トリガー設定 **しない**
+* Lambda のコードデプロイは ECR コンテナイメージに統一することで起動高速化と CI/CD 連携を容易に
+* Serverless Framework を廃止し Terraform 管理に一本化するための基盤となる
+
+### モジュールの制約・設計方針
+
+このモジュールは、Lambda 関数の標準的な運用パターンを実現するための設計になっています。以下の制約を理解した上でご利用ください。
+
+#### Lambda 関数とリソースの対応
+
+* **モジュール一つにつき Lambda 関数は一つ**
+  - 複数の Lambda 関数を管理する場合は、モジュールを複数作成
+  - マイクロサービスごとにモジュールを分けることを推奨
+
+* **ECR リポジトリも一つ（Lambda 関数に1対1対応）**
+  - 各 Lambda 関数専用の ECR リポジトリを作成
+  - イメージタグで Lambda のバージョンを管理
+
+* **アラーム用 SNS Topic は関数ごとに一つ**
+  - Lambda 関数ごとに専用の SNS Topic を作成
+  - 複数の Lambda アラームを一つの Slack チャンネルに集約する場合は、Chatbot モジュール側で設定
+
+#### パッケージタイプ
+
+* **コンテナイメージのみ対応**
+  - ZIP 形式のデプロイは未対応
+  - レイヤーは未対応
+  - 起動速度と依存関係管理の観点からコンテナイメージを推奨
+
+#### ログ設定
+
+* **JSON ログ形式固定**
+  - `log_format = "JSON"` で CloudWatch Logs Insights での分析を容易に
+  - テキスト形式への変更は未対応
+  - ログレベルは `INFO` 固定（Application / System）
+
+#### Lambda Insights
+
+* **Lambda Insights は自動有効化**
+  - `CloudWatchLambdaInsightsExecutionRolePolicy` を自動アタッチ
+  - Docker イメージに Lambda Insights Extension を含める必要あり
+  - 詳細なメトリクス（メモリ、CPU、ネットワークなど）を取得
+
+#### メモリ使用率の監視
+
+* **CloudWatch Metric Math でメモリ使用率を算出**
+  - `MaxMemoryUsed / MemorySize * 100` の計算により、OOM のリスクを事前検知
+  - メモリ使用率アラームで閾値を超えた場合に通知
+
+#### Fail Fast 設定
+
+* **Event Invoke Config は fail fast 固定**
+  - `maximum_retry_attempts = 0`（リトライなし）
+  - `maximum_event_age_in_seconds = 60`（60秒で破棄）
+  - 長時間のリトライを避け、Destination で即座にエラーハンドリング
+
+#### 再帰実行の防止
+
+* **再帰実行は Terminate 固定**
+  - `recursive_loop = "Terminate"` で無限ループを防止
+  - Lambda が自身を呼び出すことを検知して停止
+
+#### X-Ray トレーシング
+
+* **X-Ray はオプション（デフォルト: PassThrough）**
+  - `use_xray = true` で Active モード
+  - `use_xray = false` で PassThrough モード（デフォルト）
+  - Active モード時は `AWSXRayDaemonWriteAccess` を自動アタッチ
+
+#### 同時実行数の制御
+
+* **`reserved_concurrent_executions` で制限可能**
+  - デフォルトは `-1`（無制限）
+  - コスト制御や外部 API のレート制限対策に有効
+
+#### Event Source の管理範囲
+
+* **EventBridge Schedule / SNS / SQS のトリガーを管理**
+  - 下位層のメッセージ基盤からのトリガーを設定
+  - API Gateway / Step Functions のトリガーは上位モジュールで管理
+
+* **S3 トリガーは非推奨**
+  - S3 は1通知設定しか持てないため、SNS 経由を推奨
+  - 柔軟性とメンテナンス性の観点から SNS 経由が望ましい
+
+#### VPC 設定
+
+* **VPC 使用時の注意点**
+  - Lambda Insights を使用する場合、VPC に NAT Gateway または VPC Endpoint（CloudWatch Logs / CloudWatch / ECR）が必要
+  - VPC 自体の管理は外部で実施（このモジュールでは Subnet ID / Security Group ID を受け取るのみ）
+
+---
+
+## 🏷 管理範囲
 
 ### ✔ 管理する（このモジュールで作成される）
 
@@ -85,6 +170,7 @@ modules/
   - `AWSLambdaBasicExecutionRole`（CloudWatch Logs 書き込み）
   - `CloudWatchLambdaInsightsExecutionRolePolicy`（Lambda Insights）
   - `AWSLambdaVPCAccessExecutionRole`（VPC 使用時のみ）
+  - `AWSXRayDaemonWriteAccess`（X-Ray 有効時のみ）
 * **追加ポリシーのアタッチ**（`extra_policy_arns` で指定）
 * **DLQ / Destination 用 IAM ポリシー**
   - SQS への `SendMessage` 権限
@@ -115,31 +201,20 @@ modules/
   - イベントソースマッピング（バッチサイズ、ウィンドウ設定）
   - Lambda 実行ロールへの SQS アクセス権限付与
 
----
+### ✖ 管理しない（外部で管理）
 
-### ✖ 管理しない（外部モジュールが担当）
-
-他モジュールの README を参照してください。
-
-| 種類                | 担当モジュール                 | 理由                                             |
-| ----------------- | ----------------------- | ---------------------------------------------- |
-| SNS トピック本体        | `chatbot` / 各種サービスモジュール | 汎用性が高く、Lambda 専用ではないため                         |
-| SQS キュー本体         | 各サービスモジュール              | 複数の Lambda/APIGW から利用されうるため                    |
-| API Gateway リソース  | `apigateway` モジュール      | Lambda のリソースポリシーを APIGW 側で保持し循環依存を回避           |
-| Step Functions 定義 | `stepfunctions` モジュール   | Lambda Invoke Permission を Step Functions 側に置く |
-| VPC（Subnets / SG） | ネットワークモジュール             | Lambda 以外のリソースとも共有されるため                        |
+| 種類 | 担当 | 理由 |
+|-----|------|------|
+| SNS トピック本体 | `chatbot` / 各種サービスモジュール | 汎用性が高く、Lambda 専用ではないため |
+| SQS キュー本体 | 各サービスモジュール | 複数の Lambda/APIGW から利用されうるため |
+| API Gateway リソース | `apigateway` モジュール | Lambda のリソースポリシーを APIGW 側で保持し循環依存を回避 |
+| Step Functions 定義 | `stepfunctions` モジュール | Lambda Invoke Permission を Step Functions 側に置く |
+| VPC（Subnets / SG） | ネットワークモジュール | Lambda 以外のリソースとも共有されるため |
+| DLQ / Destination 用 SQS/SNS 本体 | 外部管理 | 汎用的なキューで、Lambda 専用ではない |
 
 ---
 
-### ⚠ 管理しない（使用非推奨）
-
-| 項目               | 理由                                   |
-| ---------------- | ------------------------------------ |
-| S3 → Lambda トリガー | S3 は 1 通知設定しか持てないため、柔軟性が低い（SNS 経由推奨） |
-
----
-
-## 📋 主要な変数（Variables）
+## 📋 変数（Variables）
 
 ### 必須変数
 
@@ -247,7 +322,7 @@ sqs_event_sources = [
 
 ---
 
-## 🧪 Usage Example
+## 🧪 使用例（Usage Examples）
 
 ### 基本的な使用例
 
@@ -291,8 +366,8 @@ module "lambda_example" {
   # SQS trigger
   sqs_event_sources = [
     {
-      name      = "payment-queue"
-      queue_arn = aws_sqs_queue.payment.arn
+      name       = "payment-queue"
+      queue_arn  = aws_sqs_queue.payment.arn
       batch_size = 10
     }
   ]
@@ -321,8 +396,8 @@ module "lambda_with_dlq" {
   destination_on_success_arn = aws_sqs_queue.lambda_success.arn
 
   # アラーム閾値のカスタマイズ
-  error_alarm_threshold   = 5
-  memory_alarm_threshold  = 90
+  error_alarm_threshold    = 5
+  memory_alarm_threshold   = 90
   duration_alarm_threshold = 12000  # 12秒
 }
 ```
@@ -417,7 +492,7 @@ module "lambda_with_concurrency_limit" {
 
 ---
 
-## 📤 Outputs
+## 📤 出力（Outputs）
 
 ### Lambda 基本情報
 
@@ -462,7 +537,6 @@ module "lambda_with_concurrency_limit" {
 ```hcl
 # Lambda ARN を他のリソースで参照
 resource "aws_iam_policy" "example" {
-  # ...
   policy = jsonencode({
     Statement = [{
       Action   = "lambda:InvokeFunction"
@@ -488,128 +562,7 @@ output "ecr_url" {
 
 ---
 
-## 📝 設計ポリシー
-
-### 基本方針
-
-* Lambda の「構築」「実行環境」「監視」「イベント」までを一括提供し、**再利用性と統一性を最大化**
-* Event Source の境界は「依存関係の上下関係」で区分
-  * 例：SNS/SQS のような "汎用メッセージ基盤" → Lambda にトリガー設定 **する**
-  * 例：API Gateway / Step Functions のような "Lambda の上層" → トリガー設定 **しない**
-* Lambda のコードデプロイは ECR コンテナイメージに統一することで起動高速化と CI/CD 連携を容易に
-* Serverless Framework を廃止し Terraform 管理に一本化するための基盤となる
-
-### モジュールの制約・設計方針
-
-このモジュールは、Lambda 関数の標準的な運用パターンを実現するための設計になっています。以下の制約を理解した上でご利用ください。
-
-#### Lambda 関数とリソースの対応
-
-* **モジュール一つにつき Lambda 関数は一つ**
-  - 複数の Lambda 関数を管理する場合は、モジュールを複数作成
-  - マイクロサービスごとにモジュールを分けることを推奨
-
-* **ECR リポジトリも一つ（Lambda 関数に1対1対応）**
-  - 各 Lambda 関数専用の ECR リポジトリを作成
-  - イメージタグで Lambda のバージョンを管理
-
-* **アラーム用 SNS Topic は関数ごとに一つ**
-  - Lambda 関数ごとに専用の SNS Topic を作成
-  - 複数の Lambda アラームを一つの Slack チャンネルに集約する場合は、Chatbot モジュール側で設定
-
-#### パッケージタイプ
-
-* **コンテナイメージのみ対応**
-  - ZIP 形式のデプロイは未対応
-  - レイヤーは未対応
-  - 起動速度と依存関係管理の観点からコンテナイメージを推奨
-
-#### ログ設定
-
-* **JSON ログ形式固定**
-  - `log_format = "JSON"` で CloudWatch Logs Insights での分析を容易に
-  - テキスト形式への変更は未対応
-  - ログレベルは `INFO` 固定（Application / System）
-
-#### Fail Fast 設定
-
-* **Event Invoke Config は fail fast 固定**
-  - `maximum_retry_attempts = 0`（リトライなし）
-  - `maximum_event_age_in_seconds = 60`（60秒で破棄）
-  - 長時間のリトライを避け、Destination で即座にエラーハンドリング
-
-#### 再帰実行の防止
-
-* **再帰実行は Terminate 固定**
-  - `recursive_loop = "Terminate"` で無限ループを防止
-  - Lambda が自身を呼び出すことを検知して停止
-
-#### Lambda Insights
-
-* **Lambda Insights は自動有効化**
-  - `CloudWatchLambdaInsightsExecutionRolePolicy` を自動アタッチ
-  - Docker イメージに Lambda Insights Extension を含める必要あり
-  - 詳細なメトリクス（CPU、ネットワークなど）を取得
-
-#### X-Ray トレーシング
-
-* **X-Ray はオプション（デフォルト: PassThrough）**
-  - `use_xray = true` で Active モード
-  - `use_xray = false` で PassThrough モード（デフォルト）
-  - Active モード時は `AWSXRayDaemonWriteAccess` を自動アタッチ
-
-#### Event Source の管理範囲
-
-* **EventBridge Schedule / SNS / SQS のトリガーを管理**
-  - 下位層のメッセージ基盤からのトリガーを設定
-  - API Gateway / Step Functions のトリガーは上位モジュールで管理
-
-* **S3 トリガーは非推奨**
-  - S3 は1通知設定しか持てないため、SNS 経由を推奨
-  - 柔軟性とメンテナンス性の観点から SNS 経由が望ましい
-
-#### VPC 設定
-
-* **VPC 使用時の注意点**
-  - Lambda Insights を使用する場合、VPC に NAT Gateway または VPC Endpoint（CloudWatch Logs / CloudWatch / ECR）が必要
-  - VPC 自体の管理は外部で実施（このモジュールでは Subnet ID / Security Group ID を受け取るのみ）
-
-### 実装の特徴
-
-#### JSON ログ形式の採用
-- `log_format = "JSON"` を設定し、CloudWatch Logs Insights での分析を容易に
-- Application / System ログレベルは `INFO` をデフォルトとし、必要に応じて変更可能
-
-#### Lambda Insights の自動有効化
-- `CloudWatchLambdaInsightsExecutionRolePolicy` を自動でアタッチ
-- Lambda 関数のメトリクス（メモリ、CPU、ネットワークなど）を詳細に監視可能
-- Docker イメージに Lambda Insights Extension を含める必要あり
-
-#### メモリ使用率の監視
-- CloudWatch Metric Math を使用して、メモリ使用率（%）を算出
-- `MaxMemoryUsed / MemorySize * 100` の計算により、OOM のリスクを事前検知
-
-#### Fail Fast 設定
-- Event Invoke Config で `maximum_retry_attempts = 0` を設定
-- 失敗時は即座に Destination に送信し、長時間のリトライを回避
-- `maximum_event_age_in_seconds = 60` で古いイベントは破棄
-
-#### 再帰実行の防止
-- `aws_lambda_function_recursion_config` で `recursive_loop = "Terminate"` を設定
-- Lambda が自身を無限に呼び出すことを防止
-
-#### イベントソースの柔軟な設定
-- EventBridge / SNS / SQS のトリガーを変数で柔軟に設定可能
-- 複数のイベントソースを同時に設定可能（例: 複数の SQS キューを 1 つの Lambda で処理）
-
-#### 同時実行数の制御
-- `reserved_concurrent_executions` で Lambda の最大同時実行数を制限可能
-- デフォルトは `-1`（無制限）
-- コスト制御や外部 API のレート制限対策に有効
-
----
-
-## 🔗 関連モジュール（このリポジトリ内）
+## 🔗 関連モジュール
 
 > ※ 各モジュールの詳細は、それぞれの README を参照してください。
 

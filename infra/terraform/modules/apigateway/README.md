@@ -1,6 +1,7 @@
 # API Gateway Module (Terraform)
 
 このディレクトリは **AWS API Gateway (REST API) を Terraform で構築・管理するためのモジュール** です。
+
 Lambda プロキシ統合、SQS 直接統合、カスタムドメイン、API キー、CloudWatch 監視など、
 API Gateway 運用に必要なリソースを包括的に作成します。
 
@@ -67,7 +68,110 @@ modules/
 
 ---
 
-## 🏷 このモジュールが管理する範囲
+## 📝 設計ポリシー
+
+### 基本方針
+
+* API Gateway の「構築」「統合」「監視」「カスタムドメイン」までを一括提供し、**再利用性と統一性を最大化**
+* Lambda プロキシ統合と SQS 直接統合の両方に対応し、**柔軟なアーキテクチャを実現**
+* リソース階層を自動生成することで、**パス定義の手間を削減**
+* Lambda のリソースポリシー（Invoke Permission）は **API Gateway モジュール側で管理**し、循環依存を回避
+* Terraform 管理に一本化するための基盤となる
+
+### モジュールの制約・設計方針
+
+このモジュールは、シンプルさと管理性を重視した設計になっています。以下の制約を理解した上でご利用ください。
+
+#### デプロイメント & ステージ
+
+* **モジュール一つにつきデプロイメントとステージは一つのみ**
+  - 複数ステージ（dev / staging / prod など）が必要な場合は、モジュールを複数作成
+  - 同一 REST API で複数ステージを管理する場合は、モジュールの外で管理が必要
+
+#### API キー & 使用量プラン
+
+* **API キーと使用量プランは1セットのみ**
+  - 複数の API キーや使用量プランは作成しない
+  - メソッドごとに `api_key_required` で API キーの要否を制御
+  - 複数クライアント向けに異なる API キーが必要な場合は、モジュールを分けるか外部で管理
+
+#### スロットル設定
+
+* **スロットルはメソッドレベルでは指定しない**
+  - 使用量プラン全体でスロットル（`rate_limit` / `burst_limit`）を管理
+  - メソッド別のスロットル制御が必要な場合は、Lambda 側で制御するか WAF を使用
+
+#### リソース階層
+
+* **リソース階層は最大4階層まで対応**
+  - 例: `/v1/foo/bar/baz` まで対応
+  - 5階層以上が必要な場合は、コード修正が必要
+  - パス定義から階層を自動生成（例: `/v1/hello` → `/v1` と `/v1/hello` のリソースを自動生成）
+  - プロキシパス（`{proxy+}`）にも対応
+
+#### 認証・認可
+
+* **Authorization は NONE 固定**
+  - Cognito オーソライザーは未実装
+  - Lambda オーソライザーは未実装
+  - 認証が必要な場合は、API キーまたは Lambda 関数内で実装
+
+#### エンドポイントタイプ
+
+* **リージョナルエンドポイント固定（dualstack 対応）**
+  - エッジ最適化エンドポイントは未対応
+  - プライベート統合（VPC Link）は未対応
+
+#### API タイプ
+
+* **REST API（v1）のみ対応**
+  - HTTP API（v2）は未対応
+  - WebSocket API は未対応
+
+#### カスタムドメイン
+
+* **カスタムドメイン有効時はデフォルトエンドポイントを無効化**
+  - `enable_custom_domain = true` の場合、`execute-api` エンドポイントは無効化される
+  - テスト用にデフォルトエンドポイントも使いたい場合は、`enable_custom_domain = false` に設定
+  - ACM 証明書による TLS 1.2 対応
+  - Route53 レコード（A / AAAA）を自動作成
+
+#### CloudWatch アラーム
+
+* **アラームはステージ全体のメトリクスのみ**
+  - 5XXError、4XXError、Latency、Count（リクエスト数）
+  - メソッド別・リソース別のアラームは未実装
+  - 詳細な監視が必要な場合は、外部で CloudWatch Alarms を追加作成
+  - 3つの連続期間（15分）を評価し、1つのデータポイントでアラーム発火
+  - SNS Topic への通知で Chatbot と連携
+
+#### Lambda Invoke Permission の管理
+
+* **Lambda のリソースポリシー（Invoke Permission）は API Gateway モジュール側で管理**
+  - Lambda モジュールとの循環依存を回避
+  - サブモジュール `methods/lambda_proxy` で自動作成
+
+#### SQS 統合の IAM Role 管理
+
+* **SQS 統合用の IAM Role はメソッド単位で作成**
+  - `apigateway.amazonaws.com` からの AssumeRole を許可
+  - SQS SendMessage 権限のみを付与
+  - サブモジュール `methods/sqs` で自動作成
+
+#### デプロイメントの自動化
+
+* **メソッド定義変更時に自動で再デプロイ**
+  - SHA1 ハッシュをトリガーに使用し、変更を検知
+
+#### アクセスログの形式
+
+* **アクセスログを JSON 形式で出力**
+  - CloudWatch Logs Insights での分析を容易に
+  - `requestId`, `requestTime`, `ip`, `httpMethod`, `resourcePath`, `status`, `responseLatency` などを記録
+
+---
+
+## 🏷 管理範囲
 
 ### ✔ 管理する（このモジュールで作成される）
 
@@ -138,11 +242,9 @@ modules/
   - メソッド単位で IAM Role を作成
   - SQS SendMessage 権限
 
----
+### ✖ 管理しない（外部で管理）
 
-### ✖ 管理しない（外部モジュールが担当）
-
-他モジュールの README を参照してください。
+#### 外部モジュールが担当
 
 | 種類 | 担当モジュール | 理由 |
 |-----|--------------|------|
@@ -153,9 +255,7 @@ modules/
 | Route53 Hosted Zone | 外部管理 | ドメイン全体の管理は外部で実施 |
 | WAF | 外部管理 | API Gateway 以外のリソースとも連携するため |
 
----
-
-### ⚠ 管理しない（未実装）
+#### 未実装機能
 
 | 項目 | 理由 |
 |-----|------|
@@ -166,7 +266,7 @@ modules/
 
 ---
 
-## 📋 主要な変数（Variables）
+## 📋 変数（Variables）
 
 ### 必須変数
 
@@ -265,6 +365,7 @@ responses = [
 | `execution_log_retention_in_days` | `number` | `731` | 実行ログの保持日数 |
 | `stage_alarm_config` | `object` | `{}` | ステージ全体のアラーム閾値設定 |
 | `use_xray` | `bool` | `false` | X-Ray トレーシングを有効にするかどうか |
+| `manage_apigw_account_logging_role` | `bool` | `false` | API Gateway アカウントレベルのロギング Role を管理するかどうか |
 
 #### `stage_alarm_config` の構造
 
@@ -286,7 +387,7 @@ stage_alarm_config = {
 
 ---
 
-## 🧪 Usage Example
+## 🧪 使用例（Usage Examples）
 
 ### 基本的な使用例（Lambda プロキシ統合のみ）
 
@@ -567,7 +668,7 @@ module "apigateway_full" {
 
 ---
 
-## 📤 Outputs
+## 📤 出力（Outputs）
 
 ### REST API 基本情報
 
@@ -626,122 +727,7 @@ output "rest_api_id" {
 
 ---
 
-## 📝 設計ポリシー
-
-### 基本方針
-
-* API Gateway の「構築」「統合」「監視」「カスタムドメイン」までを一括提供し、**再利用性と統一性を最大化**
-* Lambda プロキシ統合と SQS 直接統合の両方に対応し、**柔軟なアーキテクチャを実現**
-* リソース階層を自動生成することで、**パス定義の手間を削減**
-* Lambda のリソースポリシー（Invoke Permission）は **API Gateway モジュール側で管理**し、循環依存を回避
-* Terraform 管理に一本化するための基盤となる
-
-### モジュールの制約・設計方針
-
-このモジュールは、シンプルさと管理性を重視した設計になっています。以下の制約を理解した上でご利用ください。
-
-#### デプロイメント & ステージ
-
-* **モジュール一つにつきデプロイメントとステージは一つのみ**
-  - 複数ステージ（dev / staging / prod など）が必要な場合は、モジュールを複数作成
-  - 同一 REST API で複数ステージを管理する場合は、モジュールの外で管理が必要
-
-#### API キー & 使用量プラン
-
-* **API キーと使用量プランは1セットのみ**
-  - 複数の API キーや使用量プランは作成しない
-  - メソッドごとに `api_key_required` で API キーの要否を制御
-  - 複数クライアント向けに異なる API キーが必要な場合は、モジュールを分けるか外部で管理
-
-#### スロットル設定
-
-* **スロットルはメソッドレベルでは指定しない**
-  - 使用量プラン全体でスロットル（`rate_limit` / `burst_limit`）を管理
-  - メソッド別のスロットル制御が必要な場合は、Lambda 側で制御するか WAF を使用
-
-#### リソース階層
-
-* **リソース階層は最大4階層まで対応**
-  - 例: `/v1/foo/bar/baz` まで対応
-  - 5階層以上が必要な場合は、コード修正が必要
-
-#### 認証・認可
-
-* **Authorization は NONE 固定**
-  - Cognito オーソライザーは未実装
-  - Lambda オーソライザーは未実装
-  - 認証が必要な場合は、API キーまたは Lambda 関数内で実装
-
-#### エンドポイントタイプ
-
-* **リージョナルエンドポイント固定（dualstack 対応）**
-  - エッジ最適化エンドポイントは未対応
-  - プライベート統合（VPC Link）は未対応
-
-#### API タイプ
-
-* **REST API（v1）のみ対応**
-  - HTTP API（v2）は未対応
-  - WebSocket API は未対応
-
-#### カスタムドメイン
-
-* **カスタムドメイン有効時はデフォルトエンドポイントを無効化**
-  - `enable_custom_domain = true` の場合、`execute-api` エンドポイントは無効化される
-  - テスト用にデフォルトエンドポイントも使いたい場合は、`enable_custom_domain = false` に設定
-
-#### CloudWatch アラーム
-
-* **アラームはステージ全体のメトリクスのみ**
-  - 5XXError、4XXError、Latency、Count（リクエスト数）
-  - メソッド別・リソース別のアラームは未実装
-  - 詳細な監視が必要な場合は、外部で CloudWatch Alarms を追加作成
-
-### 実装の特徴
-
-#### リソース階層の自動生成
-- パス定義から最大4階層までのリソースを自動作成
-- 例: `/v1/hello` → `/v1` と `/v1/hello` のリソースを自動生成
-- プロキシパス（`{proxy+}`）にも対応
-
-#### Lambda Invoke Permission の管理
-- Lambda のリソースポリシー（Invoke Permission）は API Gateway モジュール側で管理
-- Lambda モジュールとの循環依存を回避
-- サブモジュール `methods/lambda_proxy` で自動作成
-
-#### SQS 統合の IAM Role 管理
-- SQS 統合用の IAM Role はメソッド単位で作成
-- `apigateway.amazonaws.com` からの AssumeRole を許可
-- SQS SendMessage 権限のみを付与
-- サブモジュール `methods/sqs` で自動作成
-
-#### デプロイメントの自動化
-- メソッド定義変更時に自動で再デプロイ
-- SHA1 ハッシュをトリガーに使用し、変更を検知
-
-#### アクセスログの JSON 形式
-- アクセスログを JSON 形式で出力
-- CloudWatch Logs Insights での分析を容易に
-- `requestId`, `requestTime`, `ip`, `httpMethod`, `resourcePath`, `status`, `responseLatency` などを記録
-
-#### CloudWatch アラームの自動構築
-- 5XXエラー、4XXエラー、レイテンシ、リクエスト数のアラームを自動作成
-- 3つの連続期間（15分）を評価し、1つのデータポイントでアラーム発火
-- SNS Topic への通知で Chatbot と連携
-
-#### カスタムドメインの自動設定
-- ACM 証明書による TLS 1.2 対応
-- Route53 レコード（A / AAAA）を自動作成
-- デフォルトエンドポイントを無効化（カスタムドメイン有効時）
-
-#### API キーと使用量プランの統合
-- API キーの自動生成
-- 使用量プランによるスロットル・クオータ制御
-- メソッド単位で API キー要否を設定可能
-
----
-
-## 🔗 関連モジュール（このリポジトリ内）
+## 🔗 関連モジュール
 
 > ※ 各モジュールの詳細は、それぞれの README を参照してください。
 

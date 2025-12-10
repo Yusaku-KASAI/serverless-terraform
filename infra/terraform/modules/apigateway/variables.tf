@@ -158,3 +158,9 @@ variable "use_xray" {
   description = "X-Ray トレーシングを有効にするかどうか"
   default     = false
 }
+
+variable "manage_apigw_account_logging_role" {
+  type        = bool
+  description = "API Gateway の CloudWatch Logs 連携用の アカウントレベルの IAM ロールをこのモジュールで管理するかどうか"
+  default     = true
+}

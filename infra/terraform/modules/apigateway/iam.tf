@@ -39,5 +39,7 @@ resource "aws_iam_role_policy" "apigw_cloudwatch" {
 
 # API Gateway 全体設定に CloudWatch ロールを紐付け
 resource "aws_api_gateway_account" "this" {
+  count = var.manage_apigw_account_logging_role ? 1 : 0
+
   cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch_role.arn
 }

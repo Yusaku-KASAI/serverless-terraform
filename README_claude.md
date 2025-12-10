@@ -1,6 +1,6 @@
 # serverless-terraform
 
-AWS Lambda サーバーレス構成を Terraform Modules で完全 IaC 化するプロジェクト
+AWS サーバーレス構成を Terraform Modules で完全 IaC 化するプロジェクト
 
 ---
 
@@ -24,7 +24,7 @@ AWS Lambda サーバーレス構成を Terraform Modules で完全 IaC 化する
 ### 1.1 目的
 
 このリポジトリは、
-**AWS Lambda / API Gateway / Step Functions / Chatbot / SNS / SQS などのサーバーレス構成を Terraform Modules で完全 IaC 化するためのプロジェクト** です。
+**AWS Lambda / API Gateway / Chatbot / SNS / SQS などのサーバーレス構成を Terraform Modules で完全 IaC 化するためのプロジェクト** です。
 
 Serverless Framework を段階的に廃止し、
 **ECR ベースの Lambda 運用 × Terraform 管理 × CI/CD 自動化**
@@ -50,7 +50,7 @@ Serverless Framework を段階的に廃止し、
 | 解決策 | 内容 |
 |--------|------|
 | **ECR ベースの Lambda** | Lambda はすべて Docker コンテナイメージで管理 |
-| **Terraform Modules 化** | Lambda / Chatbot / API Gateway / Step Functions などをモジュール化 |
+| **Terraform Modules 化** | Lambda / Chatbot / API Gateway をモジュール化 |
 | **完全 IaC 化** | インフラ構成をすべて Terraform で管理し、属人化を排除 |
 | **CI/CD 統合** | GitHub Actions で自動デプロイを実現（Docker ビルド → ECR プッシュ → Lambda 更新） |
 
@@ -98,6 +98,19 @@ Serverless Framework を段階的に廃止し、
 │       │   │   ├── variables.tf
 │       │   │   └── README.md
 │       │   │
+│       │   ├── apigateway/         # API Gateway (REST API v1) + Lambda/SQS 統合
+│       │   │   ├── apigateway.tf
+│       │   │   ├── cloudwatch.tf
+│       │   │   ├── domain.tf
+│       │   │   ├── iam.tf
+│       │   │   ├── stage.tf
+│       │   │   ├── outputs.tf
+│       │   │   ├── variables.tf
+│       │   │   ├── README.md
+│       │   │   └── methods/
+│       │   │       ├── lambda_proxy/  # Lambda プロキシ統合サブモジュール
+│       │   │       └── sqs/           # SQS 直接統合サブモジュール
+│       │   │
 │       │   └── chatbot/            # AWS Chatbot（Slack 通知）
 │       │       ├── chatbot.tf
 │       │       ├── iam.tf
@@ -109,11 +122,11 @@ Serverless Framework を段階的に廃止し、
 │           ├── environments.tf     # Lambda 環境変数の定義
 │           ├── flags.tf            # 機能フラグ（VPC、X-Ray など）
 │           ├── import.tf           # Terraform import 用（既存リソース）
-│           ├── locals.tf           # ローカル変数（プロジェクト名、Lambda 設定など）
+│           ├── locals.tf           # ローカル変数（プロジェクト名、Lambda/API Gateway 設定など）
 │           ├── main.tf             # プロバイダー設定
 │           ├── modules.tf          # モジュール呼び出し
 │           ├── terraform.tf        # Terraform バージョン・バックエンド設定
-│           ├── variables.tf        # 入力変数（Slack、VPC、SQS、SNS など）
+│           ├── variables.tf        # 入力変数（Slack、VPC、SQS、SNS、ACM、Route53 など）
 │           ├── terraform.tfstate   # 状態ファイル（本来は S3 管理推奨）
 │           └── terraform.tfstate.backup
 │
@@ -129,7 +142,7 @@ Serverless Framework を段階的に廃止し、
 | **`.github/workflows/`** | GitHub Actions の CI/CD 定義（main ブランチへの push で Lambda 自動デプロイ） |
 | **`infra/docker/development/`** | ローカル開発用の Dockerfile（Lambda のテスト実行環境など） |
 | **`infra/docker/production/`** | 本番環境用の Lambda コンテナイメージ Dockerfile |
-| **`infra/terraform/modules/`** | 再利用可能な Terraform モジュール（Lambda、Chatbot など） |
+| **`infra/terraform/modules/`** | 再利用可能な Terraform モジュール（Lambda、API Gateway、Chatbot） |
 | **`infra/terraform/production/`** | 本番環境固有の Terraform 設定（ここで `terraform apply` を実行） |
 | **`serverless/`** | Lambda 関数の Python コード |
 
@@ -140,42 +153,54 @@ Serverless Framework を段階的に廃止し、
 ### 3.1 全体構成図
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                          AWS Cloud                                │
-│                                                                    │
-│  ┌─────────────┐                                                  │
-│  │ EventBridge │ (スケジュール実行)                                  │
-│  │  Schedule   │──────┐                                           │
-│  └─────────────┘      │                                           │
-│                       ▼                                           │
-│  ┌─────────────┐   ┌──────────────┐   ┌─────────────┐            │
-│  │     SNS     │──>│    Lambda    │   │     ECR     │            │
-│  │   Topic     │   │   Function   │<──│ Repository  │            │
-│  └─────────────┘   └──────────────┘   └─────────────┘            │
-│                       │                      ▲                    │
-│  ┌─────────────┐     │                      │                    │
-│  │     SQS     │─────┘                      │                    │
-│  │    Queue    │                            │ (Docker Push)      │
-│  └─────────────┘                            │                    │
-│                                              │                    │
-│  ┌──────────────┐   ┌─────────────┐         │                    │
-│  │  CloudWatch  │──>│  SNS Alarm  │         │                    │
-│  │    Alarms    │   │    Topic    │         │                    │
-│  └──────────────┘   └─────────────┘         │                    │
-│                         │                    │                    │
-│  ┌──────────────┐      │                    │                    │
-│  │ AWS Chatbot  │<─────┘                    │                    │
-│  │   (Slack)    │                           │                    │
-│  └──────────────┘                           │                    │
-│         │                                    │                    │
-└─────────│────────────────────────────────────│────────────────────┘
-          │                                    │
-          ▼                                    │
-    ┌─────────┐                         ┌──────────────┐
-    │  Slack  │                         │ GitHub       │
-    │ Channel │                         │ Actions      │
-    └─────────┘                         │ (CI/CD)      │
-                                        └──────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                          AWS Cloud                                  │
+│                                                                      │
+│  ┌──────────────┐                                                   │
+│  │ EventBridge  │ (スケジュール実行)                                    │
+│  │  Schedule    │──────┐                                            │
+│  └──────────────┘      │                                            │
+│                        ▼                                            │
+│  ┌──────────────┐   ┌──────────────┐   ┌─────────────┐             │
+│  │     SNS      │──>│    Lambda    │   │     ECR     │             │
+│  │   Topic      │   │   Function   │<──│ Repository  │             │
+│  └──────────────┘   └──────────────┘   └─────────────┘             │
+│                        │                      ▲                     │
+│  ┌──────────────┐     │                      │                     │
+│  │     SQS      │─────┘                      │                     │
+│  │    Queue     │                            │ (Docker Push)       │
+│  └──────────────┘                            │                     │
+│                                               │                     │
+│  ┌───────────────┐   ┌──────────────┐        │                     │
+│  │  API Gateway  │──>│    Lambda    │        │                     │
+│  │  (REST API)   │   │   Function   │        │                     │
+│  └───────────────┘   └──────────────┘        │                     │
+│         │                                     │                     │
+│         │ (SQS 直接統合)                        │                     │
+│         ▼                                     │                     │
+│  ┌──────────────┐                            │                     │
+│  │     SQS      │                            │                     │
+│  │    Queue     │                            │                     │
+│  └──────────────┘                            │                     │
+│                                               │                     │
+│  ┌───────────────┐   ┌─────────────┐         │                     │
+│  │  CloudWatch   │──>│  SNS Alarm  │         │                     │
+│  │    Alarms     │   │    Topic    │         │                     │
+│  └───────────────┘   └─────────────┘         │                     │
+│                          │                    │                     │
+│  ┌───────────────┐      │                    │                     │
+│  │ AWS Chatbot   │<─────┘                    │                     │
+│  │   (Slack)     │                           │                     │
+│  └───────────────┘                           │                     │
+│         │                                     │                     │
+└─────────│─────────────────────────────────────│─────────────────────┘
+          │                                     │
+          ▼                                     │
+    ┌─────────┐                          ┌──────────────┐
+    │  Slack  │                          │ GitHub       │
+    │ Channel │                          │ Actions      │
+    └─────────┘                          │ (CI/CD)      │
+                                         └──────────────┘
 ```
 
 ### 3.2 コンポーネント説明
@@ -184,15 +209,18 @@ Serverless Framework を段階的に廃止し、
 |--------------|------|---------|
 | **ECR Repository** | Lambda コンテナイメージの保管場所 | Lambda モジュール |
 | **Lambda Function** | Lambda 本体（コンテナイメージ実行） | Lambda モジュール |
+| **API Gateway** | REST API (v1)、Lambda プロキシ統合・SQS 直接統合 | API Gateway モジュール |
 | **EventBridge Schedule** | cron / rate 形式でのスケジュール実行 | Lambda モジュール |
 | **SNS Topic（イベント）** | Lambda のトリガーとなる SNS トピック | **外部管理**（ARN を入力） |
 | **SQS Queue（イベント）** | Lambda のトリガーとなる SQS キュー | **外部管理**（ARN を入力） |
-| **CloudWatch Logs** | Lambda 実行ログ | Lambda モジュール |
-| **CloudWatch Alarms** | Error / Throttle / Duration / Memory などのアラーム | Lambda モジュール |
-| **SNS Alarm Topic** | アラーム通知用 SNS トピック | Lambda モジュール |
+| **CloudWatch Logs** | Lambda / API Gateway 実行ログ | 各モジュール |
+| **CloudWatch Alarms** | Error / Throttle / Duration / Memory などのアラーム | 各モジュール |
+| **SNS Alarm Topic** | アラーム通知用 SNS トピック | 各モジュール |
 | **AWS Chatbot** | SNS → Slack 通知 | Chatbot モジュール |
 | **VPC / Subnet / SG** | Lambda の VPC 配置 | **外部管理**（ID を入力） |
 | **DLQ / Destination** | 非同期実行失敗時の送信先 SQS/SNS | **外部管理**（ARN を入力） |
+| **ACM 証明書** | カスタムドメイン用 TLS 証明書 | **外部管理**（ARN を入力） |
+| **Route53 Hosted Zone** | カスタムドメイン用 DNS ゾーン | **外部管理**（Zone ID を入力） |
 
 ---
 
@@ -204,7 +232,24 @@ Serverless Framework を段階的に廃止し、
 
 Lambda 構築に必要な**すべてのリソース**を一括で作成する包括的なモジュールです。
 
-#### 4.1.2 管理するリソース
+ECR リポジトリ、Lambda 関数、CloudWatch 監視、IAM ロール、イベントソース設定まで、
+Lambda 運用に必要なリソースを完全に自動化します。
+
+詳細は [modules/lambda/README.md](./infra/terraform/modules/lambda/README.md) を参照してください。
+
+#### 4.1.2 主な特徴
+
+| 特徴 | 説明 |
+|------|------|
+| **コンテナイメージ専用** | ECR ベースの Docker イメージで Lambda を実行 |
+| **JSON ログ固定** | CloudWatch Logs Insights での分析を容易に |
+| **Fail Fast パターン** | リトライ 0 回、イベント有効期限 60 秒 |
+| **Lambda Insights 対応** | CloudWatch Lambda Insights による詳細監視 |
+| **X-Ray トレーシング** | 分散トレーシングによる性能分析（オプション） |
+| **包括的なアラーム** | Error / Throttle / Duration / Memory / Invocation の5種類 |
+| **イベントソース統合** | EventBridge / SNS / SQS トリガーの自動設定 |
+
+#### 4.1.3 管理するリソース
 
 | リソース | 説明 |
 |---------|------|
@@ -222,78 +267,103 @@ Lambda 構築に必要な**すべてのリソース**を一括で作成する包
 | **SNS Subscription** | SNS トピック → Lambda のトリガー設定 |
 | **SQS Event Source Mapping** | SQS → Lambda のイベントソース設定 |
 
-#### 4.1.3 管理しないリソース（外部依存）
+#### 4.1.4 管理しないリソース
 
-| リソース | 理由 |
-|---------|------|
-| **SNS トピック本体** | 複数の Lambda や他サービスから利用されるため、汎用性が高い |
-| **SQS キュー本体** | 同上 |
-| **VPC / Subnet / SG** | Lambda 以外のリソースとも共有されるネットワーク基盤 |
-| **DLQ / Destination SQS/SNS** | 汎用的なキューで、Lambda 専用ではない |
+| リソース | 理由 | 管理元 |
+|---------|------|--------|
+| **SNS トピック本体** | 複数の Lambda や他サービスから利用される | 外部管理（ARN を入力） |
+| **SQS キュー本体** | 同上 | 外部管理（ARN を入力） |
+| **VPC / Subnet / SG** | Lambda 以外のリソースとも共有されるネットワーク基盤 | 外部管理（ID を入力） |
+| **DLQ / Destination SQS/SNS** | 汎用的なキューで、Lambda 専用ではない | 外部管理（ARN を入力） |
+| **API Gateway** | Lambda より上位の概念として別モジュール化 | API Gateway モジュール |
 
-#### 4.1.4 管理しないリソース（上位モジュールが担当）
+#### 4.1.5 主な設計制約
 
-| リソース | 担当モジュール |
-|---------|--------------|
-| **API Gateway** | `apigateway` モジュール（未実装） |
-| **Step Functions** | `stepfunctions` モジュール（未実装） |
-
-#### 4.1.5 主な変数（`variables.tf`）
-
-| 変数名 | 型 | 説明 | デフォルト |
-|--------|---|------|-----------|
-| `function_name` | string | Lambda 関数名（必須） | - |
-| `ecr_repository_name` | string | ECR リポジトリ名（必須） | - |
-| `image_tag` | string | 使用する ECR イメージタグ | `"latest"` |
-| `memory_size` | number | メモリ（MB） | `512` |
-| `timeout` | number | タイムアウト（秒） | `10` |
-| `storage_size` | number | エフェメラルストレージ（MB） | `512` |
-| `environment_variables` | map(string) | 環境変数 | `{}` |
-| `use_vpc` | bool | VPC 内で実行するか | `false` |
-| `subnet_ids` | list(string) | VPC Subnet IDs | `[]` |
-| `security_group_ids` | list(string) | Security Group IDs | `[]` |
-| `dlq_arn` | string | Dead Letter Queue の ARN | `""` |
-| `destination_on_failure_arn` | string | 失敗時の送信先 ARN | `""` |
-| `destination_on_success_arn` | string | 成功時の送信先 ARN | `""` |
-| `eventbridge_schedules` | list(object) | EventBridge スケジュール定義 | `[]` |
-| `sns_event_sources` | list(object) | SNS トリガー設定 | `[]` |
-| `sqs_event_sources` | list(object) | SQS トリガー設定 | `[]` |
-| `log_retention_in_days` | number | ログ保持日数 | `731` |
-| `error_alarm_threshold` | number | Error アラーム閾値 | `1` |
-| `throttle_alarm_threshold` | number | Throttle アラーム閾値 | `1` |
-| `duration_alarm_threshold` | number | Duration アラーム閾値（ms） | `5000` |
-| `memory_alarm_threshold` | number | Memory 使用率アラーム閾値（%） | `80` |
-| `invocation_alarm_threshold` | number | Invocation アラーム閾値 | `1000` |
-| `use_xray` | bool | X-Ray トレーシングを有効化 | `false` |
-| `extra_policy_arns` | list(string) | 追加の IAM ポリシー ARN | `[]` |
-
-#### 4.1.6 主な出力（`outputs.tf`）
-
-| 出力名 | 説明 |
-|--------|------|
-| `function_name` | Lambda 関数名 |
-| `function_arn` | Lambda 関数 ARN |
-| `function_qualified_arn` | バージョン付き ARN |
-| `function_version` | 最新バージョン番号 |
-| `role_arn` | Lambda 実行ロール ARN |
-| `log_group_name` | CloudWatch Logs ロググループ名 |
-| `ecr_repository_url` | ECR リポジトリ URL |
-| `ecr_repository_arn` | ECR リポジトリ ARN |
-| `alarm_sns_topic_arn` | アラーム通知用 SNS Topic ARN |
-| `cloudwatch_alarm_arns` | 各種アラーム ARN のマップ |
-| `eventbridge_rule_arns` | EventBridge ルール ARN のマップ |
-| `sns_subscription_arns` | SNS サブスクリプション ARN のマップ |
-| `sqs_event_source_mapping_uuids` | SQS イベントソースマッピング UUID のマップ |
+- **モジュール一つにつき Lambda 関数は一つ**（1対1対応）
+- **ECR リポジトリも一つ**（Lambda と 1対1 対応）
+- **コンテナイメージのみ対応**（ZIP パッケージは非対応）
+- **JSON ログ形式固定**（テキストログは非対応）
+- **Fail Fast パターン固定**（リトライ 0 回、イベント有効期限 60 秒）
 
 ---
 
-### 4.2 Chatbot モジュール（`modules/chatbot`）
+### 4.2 API Gateway モジュール（`modules/apigateway`）
 
 #### 4.2.1 概要
 
+AWS API Gateway (REST API v1) を構築し、Lambda プロキシ統合と SQS 直接統合の両方に対応するモジュールです。
+
+カスタムドメイン、API キー、使用量プラン、CloudWatch 監視まで、
+API Gateway 運用に必要なリソースを完全に自動化します。
+
+詳細は [modules/apigateway/README.md](./infra/terraform/modules/apigateway/README.md) を参照してください。
+
+#### 4.2.2 主な特徴
+
+| 特徴 | 説明 |
+|------|------|
+| **Lambda プロキシ統合** | Lambda 関数への自動プロキシ統合（AWS_PROXY） |
+| **SQS 直接統合** | SQS へのダイレクト統合（AWS タイプ、非プロキシ） |
+| **リソース階層自動生成** | パスから最大4階層までのリソースを自動作成 |
+| **カスタムドメイン対応** | ACM 証明書 + Route53 レコードの自動設定 |
+| **API キー & 使用量プラン** | スロットル・クオータ制御 |
+| **包括的な監視** | 5XXError / 4XXError / Latency / Count のアラーム |
+| **JSON アクセスログ** | CloudWatch Logs Insights での分析を容易に |
+
+#### 4.2.3 管理するリソース
+
+| リソース | 説明 |
+|---------|------|
+| **REST API 本体** | リージョナルエンドポイント（dualstack 対応） |
+| **リソース階層** | パスから最大4階層までのリソースを自動生成 |
+| **Lambda プロキシ統合** | メソッド定義 + Lambda 統合 + Invoke Permission |
+| **SQS 直接統合** | メソッド定義 + SQS 統合 + IAM Role（SendMessage 権限） |
+| **デプロイメント & ステージ** | 自動再デプロイ、アクセスログ、X-Ray トレーシング |
+| **API キー & 使用量プラン** | API キー生成、スロットル・クオータ設定 |
+| **カスタムドメイン** | ACM 証明書、ベースパスマッピング、Route53 レコード（A/AAAA） |
+| **CloudWatch 監視** | アクセスログ、実行ログ、CloudWatch Alarms、SNS Topic |
+| **IAM Role** | CloudWatch Logs 書き込み用、SQS 送信用 |
+
+#### 4.2.4 管理しないリソース
+
+| リソース | 理由 | 管理元 |
+|---------|------|--------|
+| **Lambda 関数本体** | Lambda の構築・監視は Lambda モジュールで一括管理 | Lambda モジュール |
+| **SQS キュー本体** | 複数の API / Lambda から利用されうる | 外部管理（ARN を入力） |
+| **ACM 証明書** | 複数のサービスで共有される | 外部管理（ARN を入力） |
+| **Route53 Hosted Zone** | ドメイン全体の管理は外部で実施 | 外部管理（Zone ID を入力） |
+
+#### 4.2.5 主な設計制約
+
+- **モジュール一つにつきデプロイメントとステージは一つのみ**
+- **API キーと使用量プランは1セットのみ**
+- **スロットルはメソッドレベルでは指定しない**（使用量プラン全体で管理）
+- **リソース階層は最大4階層まで対応**
+- **Authorization は NONE 固定**（Cognito / Lambda オーソライザーは未実装）
+- **REST API (v1) のみ対応**（HTTP API v2 は未対応）
+
+---
+
+### 4.3 Chatbot モジュール（`modules/chatbot`）
+
+#### 4.3.1 概要
+
 AWS Chatbot（Slack 連携）を構築し、CloudWatch アラームを Slack チャンネルに通知するモジュールです。
 
-#### 4.2.2 管理するリソース
+Lambda や API Gateway のアラーム SNS Topic を集約し、
+一つの Slack チャンネルへ通知することで、監視を一元管理します。
+
+詳細は [modules/chatbot/README.md](./infra/terraform/modules/chatbot/README.md) を参照してください。
+
+#### 4.3.2 主な特徴
+
+| 特徴 | 説明 |
+|------|------|
+| **通知専用設計** | Guardrail Policy（Deny All）により ChatOps コマンドを完全無効化 |
+| **複数 SNS Topic 集約** | 複数のアラーム SNS Topic を一つの Slack チャンネルに集約 |
+| **セキュアな運用** | すべての AWS API アクションを Deny することでリスクを最小化 |
+
+#### 4.3.3 管理するリソース
 
 | リソース | 説明 |
 |---------|------|
@@ -301,46 +371,40 @@ AWS Chatbot（Slack 連携）を構築し、CloudWatch アラームを Slack チ
 | **IAM Role** | Chatbot が Assume するロール |
 | **Guardrail Policy** | すべてのアクションを Deny するポリシー（通知専用） |
 
-#### 4.2.3 管理しないリソース
+#### 4.3.4 管理しないリソース
 
-| リソース | 理由 |
-|---------|------|
-| **SNS Topic 本体** | Lambda モジュールなどで作られたアラーム通知用 SNS を受け取る |
-| **Slack App 設定** | Slack 側での AWS Chatbot App のインストールは手動 |
+| リソース | 理由 | 管理元 |
+|---------|------|--------|
+| **SNS Topic 本体** | Lambda / API Gateway モジュールで作られたアラーム通知用 SNS を受け取る | Lambda / API Gateway モジュール |
+| **Slack App 設定** | Slack 側での AWS Chatbot App のインストールは手動 | AWS Console（事前設定） |
 
-#### 4.2.4 主な変数（`variables.tf`）
+#### 4.3.5 主な設計制約
 
-| 変数名 | 型 | 説明 | デフォルト |
-|--------|---|------|-----------|
-| `project` | string | プロジェクト識別子 | `""` |
-| `configuration_name` | string | Chatbot 設定名 | `""` |
-| `slack_team_id` | string | Slack Workspace ID（必須） | `""` |
-| `slack_channel_id` | string | Slack Channel ID（必須） | `""` |
-| `sns_topic_arns` | list(string) | 通知する SNS Topic ARN リスト | `[]` |
-| `tags` | map(any) | 共通タグ | `{}` |
-
-#### 4.2.5 主な出力（`outputs.tf`）
-
-| 出力名 | 説明 |
-|--------|------|
-| `configuration_name` | Chatbot 設定名 |
-| `chatbot_slack_channel_arn` | Chatbot ARN |
-| `iam_role_arn` | Chatbot 用 IAM Role ARN |
-| `guardrail_policy_arn` | Guardrail Policy ARN |
-| `slack_team_id` | Slack Workspace ID |
-| `slack_channel_id` | Slack Channel ID |
-| `sns_topic_arns` | 紐付けた SNS Topic ARN 一覧 |
+- **モジュール一つにつき Slack チャンネル一つ**
+- **ChatOps コマンドは完全に無効化**（Guardrail: Deny All）
+- **Slack Workspace ID と Channel ID は事前設定が必要**
 
 ---
 
-### 4.3 未実装モジュール
+### 4.4 実装済みモジュール一覧
 
-以下のモジュールは **README2.md に記載されているものの、現時点では未実装** です：
+| モジュール | 状態 | 説明 |
+|----------|------|------|
+| **Lambda** | ✅ 実装済み | ECR + Lambda + CloudWatch + IAM + イベント設定の完全モジュール化 |
+| **API Gateway** | ✅ 実装済み | REST API (v1) + Lambda/SQS 統合 + カスタムドメイン + 監視 |
+| **Chatbot** | ✅ 実装済み | Slack 通知の自動化（通知専用、Deny All） |
 
-| モジュール | 用途 |
-|----------|------|
-| **API Gateway** | HTTP API → Lambda の連携 |
-| **Step Functions** | Lambda のオーケストレーション |
+---
+
+### 4.5 未実装モジュール
+
+以下のモジュールは今後実装予定です：
+
+| モジュール | 用途 | 優先度 |
+|----------|------|-------|
+| **Step Functions** | Lambda のオーケストレーション | 高 |
+| **WAF** | API Gateway の保護（レート制限、IP 制限など） | 中 |
+| **CloudWatch Dashboard** | 監視ダッシュボードの自動構築 | 低 |
 
 ---
 
@@ -396,7 +460,7 @@ python lambda_first.py
 - **AWS CLI** のインストールと設定（プロファイル設定）
 - **Terraform >= 1.6.0**
 - **Docker** のインストール（コンテナイメージビルド用）
-- **Slack Workspace** と **AWS Chatbot App** の連携設定（任意）
+- **Slack Workspace** と **AWS Chatbot App** の連携設定（Chatbot を使う場合）
 
 ### 6.2 事前に準備する AWS リソース
 
@@ -411,6 +475,8 @@ python lambda_first.py
 | **SQS Queue（Main）** | Lambda のイベントソース（メイン） | `queue_main_arn` |
 | **SQS Queue（Second）** | Lambda のイベントソース（セカンド） | `queue_second_arn` |
 | **SNS Topic（Main）** | Lambda のイベントソース | `sns_topic_main_arn` |
+| **ACM 証明書** | API Gateway カスタムドメイン用 | `apigateway_first_acm_arn`, `apigateway_second_acm_arn` |
+| **Route53 Hosted Zone** | API Gateway カスタムドメイン用 | `host_zone_id` |
 | **Slack Team ID / Channel ID** | Chatbot 通知先 | `slack_team_id`, `slack_channel_id` |
 
 ### 6.3 Terraform 変数の設定
@@ -436,6 +502,13 @@ success_queue_arn  = "arn:aws:sqs:ap-northeast-1:111111111111:your-success-queue
 queue_main_arn     = "arn:aws:sqs:ap-northeast-1:111111111111:your-main-queue"
 queue_second_arn   = "arn:aws:sqs:ap-northeast-1:111111111111:your-second-queue"
 sns_topic_main_arn = "arn:aws:sns:ap-northeast-1:111111111111:your-main-topic"
+
+# API Gateway カスタムドメイン設定
+apigateway_first_domain_name  = "api1.example.com"
+apigateway_first_acm_arn      = "arn:aws:acm:ap-northeast-1:111111111111:certificate/xxxxx"
+apigateway_second_domain_name = "api2.example.com"
+apigateway_second_acm_arn     = "arn:aws:acm:ap-northeast-1:111111111111:certificate/yyyyy"
+host_zone_id                  = "Z1234567890ABC"
 ```
 
 ### 6.4 Terraform 実行手順
@@ -748,7 +821,7 @@ RUN curl -O https://lambda-insights-extension.s3-ap-northeast-1.amazonaws.com/am
 # Copy requirements.txt & Install the specified packages
 COPY ./serverless /build
 RUN pip install --upgrade pip
-RUN if [ -f /build/requirements.txt]; then pip install -r /build/requirements.txt; fi
+RUN if [ -f /build/requirements.txt ]; then pip install -r /build/requirements.txt; fi
 RUN rm -rf /build
 
 # Copy function code
@@ -809,7 +882,66 @@ docker push 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/serverless-terrafo
 
 ---
 
-### 8.2 環境変数の設定
+### 8.2 新しい API Gateway の追加
+
+#### 8.2.1 Terraform 設定の追加
+
+`infra/terraform/production/locals.tf` に API Gateway 設定を追加：
+
+```hcl
+locals {
+  # ...既存設定...
+
+  apigateway_third = {
+    name        = "${local.project}-apigateway_third"
+    domain_name = var.apigateway_third_domain_name
+
+    lambda_proxy_methods = {
+      all = {
+        path               = "/{proxy+}"
+        http_method        = "ANY"
+        lambda_module_name = "lambda_third"
+      }
+    }
+  }
+}
+```
+
+`infra/terraform/production/modules.tf` にモジュール呼び出しを追加：
+
+```hcl
+module "apigateway_third" {
+  source = "../modules/apigateway"
+
+  project = local.project
+  name    = local.apigateway_third.name
+
+  enable_custom_domain = local.flags.apigateway_third.enable_custom_domain
+  domain_name          = local.apigateway_third.domain_name
+  acm_certificate_arn  = var.apigateway_third_acm_arn
+  zone_id              = var.host_zone_id
+
+  lambda_proxy_methods = [
+    for method_key, method_val in local.apigateway_third.lambda_proxy_methods :
+    {
+      path        = method_val.path
+      http_method = method_val.http_method
+      lambda_arn  = local.lambda_function_arns[method_val.lambda_module_name]
+    }
+  ]
+}
+```
+
+#### 8.2.2 デプロイ
+
+```bash
+cd infra/terraform/production
+terraform apply -var-file=".production.tfvars"
+```
+
+---
+
+### 8.3 環境変数の設定
 
 `infra/terraform/production/environments.tf` で Lambda の環境変数を管理します：
 
@@ -843,9 +975,11 @@ module "lambda_first" {
 
 ---
 
-### 8.3 アラームの調整
+### 8.4 アラームの調整
 
 `infra/terraform/production/locals.tf` でアラーム閾値を調整します：
+
+#### Lambda アラーム
 
 ```hcl
 locals {
@@ -860,9 +994,25 @@ locals {
 }
 ```
 
+#### API Gateway アラーム
+
+```hcl
+locals {
+  apigateway_second = {
+    # ...他の設定...
+    stage_alarm_config = {
+      five_xx_error_threshold = 5      # 5XXエラーが5回以上で通知
+      four_xx_error_threshold = 100    # 4XXエラーが100回以上で通知
+      latency_threshold_ms    = 2000   # レイテンシ2秒以上で通知
+      count_threshold         = 10000  # リクエスト数10000以上で通知
+    }
+  }
+}
+```
+
 ---
 
-### 8.4 VPC / X-Ray の有効化
+### 8.5 VPC / X-Ray の有効化
 
 `infra/terraform/production/flags.tf` で機能フラグを管理します：
 
@@ -872,6 +1022,11 @@ locals {
     lambda_second = {
       use_vpc  = true   # VPC 内で実行
       use_xray = true   # X-Ray トレーシングを有効化
+    }
+    apigateway_second = {
+      enable_custom_domain              = true   # カスタムドメインを有効化
+      use_xray                          = true   # X-Ray トレーシングを有効化
+      manage_apigw_account_logging_role = false  # アカウントレベルのロギングRoleを管理しない
     }
   }
 }
@@ -886,9 +1041,9 @@ locals {
 | 設計原則 | 説明 |
 |---------|------|
 | **Lambda モジュール** | Lambda の構築・監視・イベント設定を包括的に管理 |
+| **API Gateway モジュール** | REST API の構築・統合・カスタムドメイン・監視を管理 |
 | **Chatbot モジュール** | アラーム通知を Slack に送信 |
-| **外部依存** | VPC / SNS / SQS などの汎用リソースは外部で管理 |
-| **上位モジュール** | API Gateway / Step Functions は Lambda より上位の概念として別モジュール化 |
+| **外部依存** | VPC / SNS / SQS / ACM / Route53 などの汎用リソースは外部で管理 |
 
 ### 9.2 依存関係の管理
 
@@ -897,7 +1052,7 @@ locals {
 ```
 ┌─────────────────────┐
 │  API Gateway        │  ← 上位モジュール（Lambda を呼び出す側）
-│  Step Functions     │
+│  Step Functions     │     Lambda Invoke Permission は API Gateway 側で管理
 └──────────┬──────────┘
            │
            ▼
@@ -911,13 +1066,37 @@ locals {
 └─────────────────────┘
 ```
 
-### 9.3 制約事項
+### 9.3 モジュール設計の共通原則
+
+#### 9.3.1 一つのモジュール = 一つのメインリソース
+
+- **Lambda モジュール**: 一つの Lambda 関数 + 一つの ECR リポジトリ
+- **API Gateway モジュール**: 一つの REST API + 一つのデプロイメント/ステージ
+- **Chatbot モジュール**: 一つの Slack チャンネル
+
+複数のリソースが必要な場合は、モジュールを複数作成します。
+
+#### 9.3.2 汎用リソースは外部管理
+
+VPC、SNS、SQS、ACM 証明書、Route53 Hosted Zone など、
+複数のモジュールやサービスで共有されるリソースは、モジュール外で管理します。
+
+#### 9.3.3 上位モジュールが下位リソースのポリシーを管理
+
+API Gateway が Lambda を呼び出す場合、
+Lambda Invoke Permission（リソースポリシー）は **API Gateway モジュール側で管理** します。
+
+これにより、循環依存を回避し、依存関係を明確にします。
+
+### 9.4 制約事項
 
 | 制約 | 理由 |
 |------|------|
 | **S3 トリガーは非推奨** | S3 は 1 通知設定しか持てないため、SNS 経由を推奨 |
 | **VPC / SNS / SQS は外部管理** | 複数の Lambda やサービスで共有されるため |
 | **Terraform State はローカル** | 現在は `terraform.tfstate` がローカルに保存されているが、**本来は S3 バックエンド推奨** |
+| **Lambda はコンテナイメージのみ** | ZIP パッケージは非対応（起動速度とイメージサイズの観点から） |
+| **JSON ログ固定** | CloudWatch Logs Insights での分析を容易にするため |
 
 ---
 
@@ -928,18 +1107,20 @@ locals {
 | 項目 | 完了日 | 説明 |
 |------|-------|------|
 | **Lambda モジュール** | ✅ | ECR + Lambda + CloudWatch + IAM + イベント設定の完全モジュール化 |
+| **API Gateway モジュール** | ✅ | REST API (v1) + Lambda/SQS 統合 + カスタムドメイン + 監視 |
 | **Chatbot モジュール** | ✅ | Slack 通知の自動化 |
 | **CI/CD の整備** | ✅ | GitHub Actions による自動デプロイ（Docker ビルド → ECR プッシュ → Lambda 更新） |
+| **モジュールドキュメント** | ✅ | 各モジュールの包括的な README の整備 |
 
 ### 10.2 実装予定
 
 | 項目 | 優先度 | 説明 |
 |------|-------|------|
-| **API Gateway モジュール** | 高 | HTTP API → Lambda の連携を Terraform 化 |
 | **Step Functions モジュール** | 高 | Lambda のオーケストレーションを Terraform 化 |
-| **Terraform Backend の S3 化** | 中 | State ファイルを S3 に保存し、複数人での運用を可能に |
+| **Terraform Backend の S3 化** | 高 | State ファイルを S3 に保存し、複数人での運用を可能に |
 | **Staging 環境の分離** | 中 | `production` と `staging` ディレクトリを分ける |
-| **CloudWatch Dashboard** | 低 | 監視ダッシュボードの自動構築 |
+| **WAF モジュール** | 中 | API Gateway の保護（レート制限、IP 制限など） |
+| **CloudWatch Dashboard モジュール** | 低 | 監視ダッシュボードの自動構築 |
 | **Datadog 連携** | 低 | Datadog による統合監視 |
 
 ### 10.3 技術的負債
@@ -949,6 +1130,7 @@ locals {
 | **Terraform State の共有** | S3 バックエンド + DynamoDB ロックの設定 |
 | **Secrets 管理** | AWS Secrets Manager / Parameter Store との連携 |
 | **Terraform の変数管理** | 環境変数や機密情報を `.tfvars` ファイルから分離 |
+| **API Gateway の CI/CD** | API 定義変更時の自動デプロイ |
 
 ---
 
@@ -957,7 +1139,9 @@ locals {
 ### 参考リンク
 
 - [Terraform AWS Lambda Module（公式）](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function)
+- [Terraform AWS API Gateway Resources（公式）](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/api_gateway_rest_api)
 - [AWS Lambda コンテナイメージ（公式）](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)
+- [AWS API Gateway（公式）](https://docs.aws.amazon.com/apigateway/latest/developerguide/)
 - [AWS Chatbot（公式）](https://docs.aws.amazon.com/chatbot/latest/adminguide/what-is.html)
 
 ### トラブルシューティング
@@ -990,6 +1174,24 @@ The image with imageId 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/...:lat
 - `locals.tf` でアラーム閾値を調整
 - Chatbot モジュールが正しく SNS Topic を購読しているか確認
 
+#### API Gateway で 5XX エラーが発生する
+
+**原因**: Lambda の実行権限が不足している、またはタイムアウト
+
+**対応**:
+- Lambda の実行ロールに必要な権限があるか確認
+- Lambda のタイムアウト設定を確認（API Gateway は最大 29 秒）
+- CloudWatch Logs で Lambda の実行ログを確認
+
+#### API Gateway のカスタムドメインが反映されない
+
+**原因**: ACM 証明書のリージョンが異なる、または DNS レコードが未反映
+
+**対応**:
+- ACM 証明書は API Gateway と **同じリージョン** で作成されているか確認
+- Route53 レコードが正しく作成されているか確認
+- DNS の伝播には時間がかかるため、数分待つ
+
 ---
 
 ## ライセンス
@@ -999,3 +1201,9 @@ The image with imageId 111111111111.dkr.ecr.ap-northeast-1.amazonaws.com/...:lat
 ---
 
 以上が、`serverless-terraform` プロジェクトの包括的なドキュメントです。
+
+各モジュールの詳細については、以下の個別ドキュメントを参照してください：
+
+- [Lambda モジュール](./infra/terraform/modules/lambda/README.md)
+- [API Gateway モジュール](./infra/terraform/modules/apigateway/README.md)
+- [Chatbot モジュール](./infra/terraform/modules/chatbot/README.md)

@@ -122,10 +122,11 @@ module "apigateway_second" {
   acm_certificate_arn  = var.apigateway_second_acm_arn
   zone_id              = var.host_zone_id
 
-  access_log_retention_in_days    = local.apigateway_second.access_log_retention_in_days
-  execution_log_retention_in_days = local.apigateway_second.execution_log_retention_in_days
-  use_xray                        = local.flags.apigateway_second.use_xray
-  stage_alarm_config              = local.apigateway_second.stage_alarm_config
+  access_log_retention_in_days      = local.apigateway_second.access_log_retention_in_days
+  execution_log_retention_in_days   = local.apigateway_second.execution_log_retention_in_days
+  use_xray                          = local.flags.apigateway_second.use_xray
+  stage_alarm_config                = local.apigateway_second.stage_alarm_config
+  manage_apigw_account_logging_role = local.flags.apigateway_second.manage_apigw_account_logging_role
 
   lambda_proxy_methods = [
     for method_key, method_val in local.apigateway_second.lambda_proxy_methods :

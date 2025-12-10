@@ -11,8 +11,9 @@ locals {
     }
 
     apigateway_second = {
-      enable_custom_domain = true
-      use_xray             = true
+      enable_custom_domain              = true
+      use_xray                          = true
+      manage_apigw_account_logging_role = false
     }
   }
 }

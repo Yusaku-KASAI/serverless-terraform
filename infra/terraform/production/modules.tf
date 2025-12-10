@@ -19,10 +19,11 @@ module "lambda_second" {
   ecr_repository_name = local.lambda_second.ecr_repository_name
   image_tag           = local.lambda_second.image_tag
 
-  timeout               = local.lambda_second.timeout_seconds
-  memory_size           = local.lambda_second.memory_mb
-  storage_size          = local.lambda_second.storage_mb
-  environment_variables = local.lambda_environments.lambda_second
+  timeout                        = local.lambda_second.timeout_seconds
+  memory_size                    = local.lambda_second.memory_mb
+  storage_size                   = local.lambda_second.storage_mb
+  environment_variables          = local.lambda_environments.lambda_second
+  reserved_concurrent_executions = local.lambda_second.reserved_concurrent_executions
 
   use_vpc            = local.flags.lambda_second.use_vpc
   subnet_ids         = var.lambda_subnet_ids

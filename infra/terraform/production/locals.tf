@@ -21,9 +21,10 @@ locals {
     ecr_repository_name = "${local.project}-lambda_second"
     image_tag           = "release"
 
-    memory_mb       = 1024
-    timeout_seconds = 25
-    storage_mb      = 1024
+    memory_mb                      = 1024
+    timeout_seconds                = 25
+    storage_mb                     = 1024
+    reserved_concurrent_executions = 1
 
     eventbridge_schedules = [
       {

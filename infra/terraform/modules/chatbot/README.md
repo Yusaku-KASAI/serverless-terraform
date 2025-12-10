@@ -350,6 +350,48 @@ resource "aws_cloudwatch_event_target" "chatbot" {
   - プロジェクト単位の Chatbot を簡単に量産できる
   - 明示的な命名も可能で柔軟性を確保
 
+### モジュールの制約・設計方針
+
+このモジュールは、セキュリティを重視した通知専用の設計になっています。以下の制約を理解した上でご利用ください。
+
+#### Slack チャンネルとの対応
+
+* **モジュール一つにつき Slack チャンネル一つ**
+  - 複数の Slack チャンネルに通知する場合は、モジュールを複数作成
+  - チャンネルごとに通知する SNS Topic を変えることで、アラートの種類を分離可能
+
+#### 通知専用の制約
+
+* **ChatOps コマンドは完全に無効化（Guardrail: deny-all）**
+  - Slack から AWS リソースを操作することは不可
+  - セキュリティリスクを最小化するため、通知機能のみに特化
+  - Guardrail ポリシーで全ての AWS API アクションを Deny
+
+#### 事前準備が必要
+
+* **Slack Workspace ID と Channel ID は事前設定が必要**
+  - AWS Console で Slack Workspace と AWS Chatbot の連携を事前に実施
+  - Slack チャンネルを作成し、Channel ID を取得
+  - これらの情報を変数として渡す
+
+#### SNS Topic の管理
+
+* **SNS Topic 本体はこのモジュールでは管理しない**
+  - Lambda モジュールや API Gateway モジュールで作成された SNS Topic の ARN を受け取る
+  - 複数の SNS Topic を一つの Slack チャンネルに集約可能
+
+#### 命名規則
+
+* **Configuration Name は自動生成または明示指定**
+  - `configuration_name` 未指定時は `${project}-chatbot-slack` が自動生成
+  - 明示指定も可能で、プロジェクト固有の命名規則に対応
+
+#### Workspace と Channel の取得
+
+* **Slack Workspace 名と Channel 名は AWS が自動取得**
+  - Output で `slack_team_name` と `slack_channel_name` を出力
+  - Terraform 側で名前を指定する必要はなし（ID のみ指定）
+
 ### 実装の特徴
 
 #### Guardrail ポリシー（deny-all）
@@ -413,11 +455,12 @@ resource "aws_cloudwatch_event_target" "chatbot" {
   - Chatbot モジュールと組み合わせて Slack 通知を実現
   - 詳細: [modules/lambda/README.md](../lambda/README.md)
 
-### 未実装モジュール（今後の予定）
-
-* **`modules/apigateway`** 🔄
+* **`modules/apigateway`** ✅
   - API Gateway 単位のアラーム（レイテンシ、エラー率など）を SNS に送信
   - Chatbot で API の異常を Slack 通知
+  - 詳細: [modules/apigateway/README.md](../apigateway/README.md)
+
+### 未実装モジュール（今後の予定）
 
 * **`modules/stepfunctions`** 🔄
   - Step Functions ステートマシンのアラーム（実行失敗、タイムアウトなど）を SNS に送信

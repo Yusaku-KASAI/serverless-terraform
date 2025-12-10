@@ -158,6 +158,7 @@ modules/
 | `timeout` | `number` | `10` | タイムアウト（秒） |
 | `storage_size` | `number` | `512` | エフェメラルストレージサイズ（MB） |
 | `environment_variables` | `map(string)` | `{}` | 環境変数 |
+| `reserved_concurrent_executions` | `number` | `-1` | Lambda の最大同時実行数（-1 は無制限） |
 | `extra_policy_arns` | `list(string)` | `[]` | Lambda 実行ロールに追加で付与するマネージドポリシー ARN リスト |
 
 ### VPC 設定
@@ -396,6 +397,24 @@ module "lambda_multi_source" {
 }
 ```
 
+### 同時実行数を制限する例
+
+```hcl
+module "lambda_with_concurrency_limit" {
+  source = "./modules/lambda"
+
+  project             = "sample"
+  function_name       = "rate-limited-processor"
+  ecr_repository_name = "rate-limited-processor"
+
+  # 同時実行数を 10 に制限（コスト制御やレート制限対策）
+  reserved_concurrent_executions = 10
+
+  memory_size = 512
+  timeout     = 30
+}
+```
+
 ---
 
 ## 📤 Outputs
@@ -480,6 +499,81 @@ output "ecr_url" {
 * Lambda のコードデプロイは ECR コンテナイメージに統一することで起動高速化と CI/CD 連携を容易に
 * Serverless Framework を廃止し Terraform 管理に一本化するための基盤となる
 
+### モジュールの制約・設計方針
+
+このモジュールは、Lambda 関数の標準的な運用パターンを実現するための設計になっています。以下の制約を理解した上でご利用ください。
+
+#### Lambda 関数とリソースの対応
+
+* **モジュール一つにつき Lambda 関数は一つ**
+  - 複数の Lambda 関数を管理する場合は、モジュールを複数作成
+  - マイクロサービスごとにモジュールを分けることを推奨
+
+* **ECR リポジトリも一つ（Lambda 関数に1対1対応）**
+  - 各 Lambda 関数専用の ECR リポジトリを作成
+  - イメージタグで Lambda のバージョンを管理
+
+* **アラーム用 SNS Topic は関数ごとに一つ**
+  - Lambda 関数ごとに専用の SNS Topic を作成
+  - 複数の Lambda アラームを一つの Slack チャンネルに集約する場合は、Chatbot モジュール側で設定
+
+#### パッケージタイプ
+
+* **コンテナイメージのみ対応**
+  - ZIP 形式のデプロイは未対応
+  - レイヤーは未対応
+  - 起動速度と依存関係管理の観点からコンテナイメージを推奨
+
+#### ログ設定
+
+* **JSON ログ形式固定**
+  - `log_format = "JSON"` で CloudWatch Logs Insights での分析を容易に
+  - テキスト形式への変更は未対応
+  - ログレベルは `INFO` 固定（Application / System）
+
+#### Fail Fast 設定
+
+* **Event Invoke Config は fail fast 固定**
+  - `maximum_retry_attempts = 0`（リトライなし）
+  - `maximum_event_age_in_seconds = 60`（60秒で破棄）
+  - 長時間のリトライを避け、Destination で即座にエラーハンドリング
+
+#### 再帰実行の防止
+
+* **再帰実行は Terminate 固定**
+  - `recursive_loop = "Terminate"` で無限ループを防止
+  - Lambda が自身を呼び出すことを検知して停止
+
+#### Lambda Insights
+
+* **Lambda Insights は自動有効化**
+  - `CloudWatchLambdaInsightsExecutionRolePolicy` を自動アタッチ
+  - Docker イメージに Lambda Insights Extension を含める必要あり
+  - 詳細なメトリクス（CPU、ネットワークなど）を取得
+
+#### X-Ray トレーシング
+
+* **X-Ray はオプション（デフォルト: PassThrough）**
+  - `use_xray = true` で Active モード
+  - `use_xray = false` で PassThrough モード（デフォルト）
+  - Active モード時は `AWSXRayDaemonWriteAccess` を自動アタッチ
+
+#### Event Source の管理範囲
+
+* **EventBridge Schedule / SNS / SQS のトリガーを管理**
+  - 下位層のメッセージ基盤からのトリガーを設定
+  - API Gateway / Step Functions のトリガーは上位モジュールで管理
+
+* **S3 トリガーは非推奨**
+  - S3 は1通知設定しか持てないため、SNS 経由を推奨
+  - 柔軟性とメンテナンス性の観点から SNS 経由が望ましい
+
+#### VPC 設定
+
+* **VPC 使用時の注意点**
+  - Lambda Insights を使用する場合、VPC に NAT Gateway または VPC Endpoint（CloudWatch Logs / CloudWatch / ECR）が必要
+  - VPC 自体の管理は外部で実施（このモジュールでは Subnet ID / Security Group ID を受け取るのみ）
+
 ### 実装の特徴
 
 #### JSON ログ形式の採用
@@ -508,14 +602,34 @@ output "ecr_url" {
 - EventBridge / SNS / SQS のトリガーを変数で柔軟に設定可能
 - 複数のイベントソースを同時に設定可能（例: 複数の SQS キューを 1 つの Lambda で処理）
 
+#### 同時実行数の制御
+- `reserved_concurrent_executions` で Lambda の最大同時実行数を制限可能
+- デフォルトは `-1`（無制限）
+- コスト制御や外部 API のレート制限対策に有効
+
 ---
 
 ## 🔗 関連モジュール（このリポジトリ内）
 
 > ※ 各モジュールの詳細は、それぞれの README を参照してください。
 
-* `chatbot` – 監視 SNS の Slack 通知など
-* `apigateway` – HTTP リクエスト → Lambda をつなぐ API Gateway
-* `stepfunctions` – Lambda をオーケストレーションするステートマシン
+### 実装済みモジュール
+
+* **`chatbot`** ✅
+  - CloudWatch アラームを Slack に通知
+  - Lambda モジュールのアラーム SNS Topic と連携
+  - 詳細: [modules/chatbot/README.md](../chatbot/README.md)
+
+* **`apigateway`** ✅
+  - HTTP API → Lambda のプロキシ統合
+  - API Gateway のアラーム監視機能を提供
+  - Lambda のリソースポリシー（Invoke Permission）は apigateway モジュール側で管理（循環依存回避のため）
+  - 詳細: [modules/apigateway/README.md](../apigateway/README.md)
+
+### 未実装モジュール
+
+* **`stepfunctions`** 🔄
+  - Lambda をオーケストレーションするステートマシン
+  - Lambda Invoke Permission を Step Functions 側に配置予定
 
 ---

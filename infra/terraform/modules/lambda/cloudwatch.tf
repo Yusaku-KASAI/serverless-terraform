@@ -139,6 +139,8 @@ resource "aws_cloudwatch_metric_alarm" "duration" {
 
 
 resource "aws_cloudwatch_metric_alarm" "invocation" {
+  count = var.invocation_alarm_threshold != null ? 1 : 0
+
   alarm_name          = "${aws_lambda_function.this.function_name}-invocations"
   alarm_description   = "Alarm when the invocation count in 5 minute exceeds ${var.invocation_alarm_threshold} in the last 15 minutes"
   comparison_operator = "GreaterThanOrEqualToThreshold"

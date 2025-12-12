@@ -152,22 +152,22 @@ variable "throttle_alarm_threshold" {
   default     = 1
 }
 
+variable "memory_alarm_threshold" {
+  type        = number
+  description = "直近15分の最大メモリ使用率閾値(%)"
+  default     = 80
+}
+
 variable "duration_alarm_threshold" {
   type        = number
-  description = "直近15分の最大 Duration ミリ秒数閾値"
+  description = "直近15分の最大 Duration ミリ秒数閾値（lambdaのtimeoutの値に注意して設定）"
   default     = 5000
 }
 
 variable "invocation_alarm_threshold" {
   type        = number
-  description = "直近15分の5分あたりの合計 Invocations 回数閾値"
-  default     = 1000
-}
-
-variable "memory_alarm_threshold" {
-  type        = number
-  description = "直近15分の最大メモリ使用率閾値(%)"
-  default     = 80
+  description = "直近15分の5分あたりの合計 Invocations 回数閾値（要件と用途によるが指定しなければアラームなし）"
+  default     = null
 }
 
 # フラグ設定

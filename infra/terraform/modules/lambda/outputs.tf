@@ -65,7 +65,7 @@ output "cloudwatch_alarm_arns" {
     throttle   = aws_cloudwatch_metric_alarm.throttle.arn
     memory     = aws_cloudwatch_metric_alarm.memory.arn
     duration   = aws_cloudwatch_metric_alarm.duration.arn
-    invocation = aws_cloudwatch_metric_alarm.invocation.arn
+    invocation = length(aws_cloudwatch_metric_alarm.invocation) > 0 ? aws_cloudwatch_metric_alarm.invocation[0].arn : null
   }
 }
 

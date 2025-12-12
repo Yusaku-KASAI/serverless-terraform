@@ -15,6 +15,13 @@ resource "aws_api_gateway_rest_api" "this" {
   )
 }
 
+resource "aws_api_gateway_rest_api_policy" "this" {
+  count = local.rp_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  policy      = data.aws_iam_policy_document.apigw_resource_policy[0].json
+}
+
 # パスから親パス・path_part を計算するローカル
 locals {
   # メソッドで使われるすべてのパス

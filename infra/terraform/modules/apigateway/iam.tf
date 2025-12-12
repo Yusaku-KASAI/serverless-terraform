@@ -43,3 +43,77 @@ resource "aws_api_gateway_account" "this" {
 
   cloudwatch_role_arn = aws_iam_role.apigw_cloudwatch_role.arn
 }
+
+# API Gateway のリソースポリシー（ip制限用）
+locals {
+  rp_enabled = length(var.allowed_source_ips) > 0 || length(var.denied_source_ips) > 0
+  has_allow  = length(var.allowed_source_ips) > 0
+  has_deny   = length(var.denied_source_ips) > 0
+
+  # execute-api の ARN（REST API 全体に適用したいので /*/*/* で OK）
+  execute_api_arn = "arn:aws:execute-api:${data.aws_region.current.name}:${data.aws_caller_identity.self.account_id}:${aws_api_gateway_rest_api.this.id}/*/*/*"
+}
+
+data "aws_iam_policy_document" "apigw_resource_policy" {
+  count = local.rp_enabled ? 1 : 0
+
+  # 1) denylist（優先）
+  dynamic "statement" {
+    for_each = local.has_deny ? [1] : []
+    content {
+      sid    = "DenyBySourceIpDenyList"
+      effect = "Deny"
+
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+
+      actions   = ["execute-api:Invoke"]
+      resources = [local.execute_api_arn]
+
+      condition {
+        test     = "IpAddress"
+        variable = "aws:SourceIp"
+        values   = var.denied_source_ips
+      }
+    }
+  }
+
+  # 2) allowlist がある場合：allow に含まれないものを Deny
+  dynamic "statement" {
+    for_each = local.has_allow ? [1] : []
+    content {
+      sid    = "DenyBySourceIpNotInAllowList"
+      effect = "Deny"
+
+      principals {
+        type        = "*"
+        identifiers = ["*"]
+      }
+
+      actions   = ["execute-api:Invoke"]
+      resources = [local.execute_api_arn]
+
+      condition {
+        test     = "NotIpAddress"
+        variable = "aws:SourceIp"
+        values   = var.allowed_source_ips
+      }
+    }
+  }
+
+  # 3) 明示 allow（保険：ポリシーの意図が分かりやすくなる）
+  statement {
+    sid    = "AllowInvoke"
+    effect = "Allow"
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    actions   = ["execute-api:Invoke"]
+    resources = [local.execute_api_arn]
+  }
+}

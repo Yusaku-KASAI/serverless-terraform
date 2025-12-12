@@ -23,6 +23,19 @@ variable "stage_name" {
   default     = "prod"
 }
 
+# ip制限
+variable "allowed_source_ips" {
+  type        = list(string)
+  description = "許可する Source IP CIDR（指定すると allowlist 運用: それ以外は拒否）"
+  default     = []
+}
+
+variable "denied_source_ips" {
+  type        = list(string)
+  description = "拒否する Source IP CIDR（deny は allow より優先）"
+  default     = []
+}
+
 # APIキーまわり
 variable "enable_api_key" {
   type        = bool

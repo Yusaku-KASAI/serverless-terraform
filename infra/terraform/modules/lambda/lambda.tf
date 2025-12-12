@@ -36,7 +36,7 @@ resource "aws_lambda_function" "this" {
 
     content {
       subnet_ids         = var.subnet_ids
-      security_group_ids = var.security_group_ids
+      security_group_ids = length(var.security_group_ids) > 0 ? var.security_group_ids : [aws_security_group.this[0].id]
     }
   }
 

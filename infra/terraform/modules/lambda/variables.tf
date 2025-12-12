@@ -80,7 +80,7 @@ variable "subnet_ids" {
 
 variable "security_group_ids" {
   type        = list(string)
-  description = "VPC Lambda 用 security group IDs（use_vpc = true のとき必須）"
+  description = "VPC Lambda 用 security group IDs（use_vpc = true のとき必要。空リストの場合はデフォルトのSGを自動作成）"
   default     = []
 }
 

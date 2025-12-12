@@ -67,6 +67,9 @@ locals {
     stage_name  = "production"
     domain_name = var.apigateway_second_domain_name
 
+    allowed_source_ips = ["111.111.111.111/32"] # テスト用
+    denied_source_ips  = ["222.222.222.222/32"] # テスト用
+
     enable_api_key = true
     usage_plan_throttle = {
       rate_limit  = 50

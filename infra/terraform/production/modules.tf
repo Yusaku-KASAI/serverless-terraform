@@ -113,6 +113,9 @@ module "apigateway_second" {
   name       = local.apigateway_second.name
   stage_name = local.apigateway_second.stage_name
 
+  allowed_source_ips = local.apigateway_second.allowed_source_ips
+  denied_source_ips  = local.apigateway_second.denied_source_ips
+
   enable_api_key      = local.apigateway_second.enable_api_key
   usage_plan_throttle = local.apigateway_second.usage_plan_throttle
   usage_plan_quota    = local.apigateway_second.usage_plan_quota

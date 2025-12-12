@@ -30,11 +30,12 @@ API Gateway の構築・管理をリポジトリ横断で統一し、
 ```
 modules/
   apigateway/
-    apigateway.tf          # REST API 本体、リソース階層の自動生成
+    apigateway.tf          # REST API 本体、リソース階層の自動生成、リソースポリシー
     stage.tf               # デプロイメント、ステージ、API キー、使用量プラン
     domain.tf              # カスタムドメイン、Route53 レコード
     cloudwatch.tf          # ログ、アラーム、SNS Topic
-    iam.tf                 # CloudWatch Logs 書き込み用 IAM Role
+    iam.tf                 # CloudWatch Logs 書き込み用 IAM Role、リソースポリシー
+    data.tf                # AWS アカウント情報、リージョン情報
     variables.tf           # 入力変数
     outputs.tf             # 出力値
     README.md              # このファイル
@@ -56,11 +57,12 @@ modules/
 
 | ファイル | 内容 |
 |---------|------|
-| `apigateway.tf` | REST API 本体、リソース階層の自動生成（最大4階層まで対応） |
+| `apigateway.tf` | REST API 本体、リソース階層の自動生成（最大4階層まで対応）、リソースポリシー |
 | `stage.tf` | デプロイメント、ステージ設定、API キー、使用量プラン |
 | `domain.tf` | カスタムドメイン、ACM 証明書、Route53 レコード（A/AAAA） |
 | `cloudwatch.tf` | アクセスログ、実行ログ、CloudWatch アラーム、SNS Topic |
-| `iam.tf` | API Gateway が CloudWatch Logs に書き込むための IAM Role |
+| `iam.tf` | API Gateway が CloudWatch Logs に書き込むための IAM Role、IP 制限用リソースポリシー |
+| `data.tf` | AWS アカウント ID、リージョン情報の取得 |
 | `variables.tf` | 入力変数 |
 | `outputs.tf` | 出力値 |
 | `methods/lambda_proxy/` | Lambda プロキシ統合のサブモジュール |
@@ -81,6 +83,14 @@ modules/
 ### モジュールの制約・設計方針
 
 このモジュールは、シンプルさと管理性を重視した設計になっています。以下の制約を理解した上でご利用ください。
+
+#### IP 制限
+
+* **リソースポリシーによる IP 制限**
+  - `allowed_source_ips` で許可する IP CIDR を指定（allowlist 運用）
+  - `denied_source_ips` で拒否する IP CIDR を指定（denylist 運用）
+  - 両方指定した場合、denylist が優先される
+  - どちらも空リストの場合、IP 制限は適用されない
 
 #### デプロイメント & ステージ
 
@@ -180,6 +190,10 @@ modules/
   - リージョナルエンドポイント（dualstack 対応）
   - API キーソース: `HEADER`
   - カスタムドメイン有効時はデフォルトエンドポイントを無効化
+* **リソースポリシー（IP 制限）**
+  - `allowed_source_ips` による allowlist 運用（指定されたIP以外を拒否）
+  - `denied_source_ips` による denylist 運用（指定されたIPを拒否）
+  - 両方指定時は denylist が優先される
 * **リソース階層の自動生成**
   - パスから最大4階層までのリソースを自動作成（例: `/v1/hello` → `/v1` と `/v1/hello`）
   - プロキシパス（`{proxy+}`）にも対応
@@ -279,6 +293,13 @@ modules/
 | 変数名 | 型 | デフォルト | 説明 |
 |--------|---|-----------|------|
 | `stage_name` | `string` | `"prod"` | ステージ名（デプロイ時に使用） |
+
+### IP 制限設定
+
+| 変数名 | 型 | デフォルト | 説明 |
+|--------|---|-----------|------|
+| `allowed_source_ips` | `list(string)` | `[]` | 許可する Source IP CIDR（指定すると allowlist 運用: それ以外は拒否） |
+| `denied_source_ips` | `list(string)` | `[]` | 拒否する Source IP CIDR（deny は allow より優先） |
 
 ### Lambda プロキシ統合設定
 
@@ -442,6 +463,89 @@ module "apigateway_with_domain" {
 }
 ```
 
+### IP 制限の使用例（Allowlist 運用）
+
+```hcl
+module "apigateway_with_ip_restriction" {
+  source = "./modules/apigateway"
+
+  project = "sample"
+  name    = "sample-api-restricted"
+
+  # IP 制限（allowlist）- 指定された IP からのみアクセス可能
+  allowed_source_ips = [
+    "203.0.113.0/24",  # オフィスネットワーク
+    "198.51.100.5/32"  # 特定のサーバー
+  ]
+
+  # Lambda プロキシ統合
+  lambda_proxy_methods = [
+    {
+      path        = "/{proxy+}"
+      http_method = "ANY"
+      lambda_arn  = module.lambda_app.function_arn
+    }
+  ]
+}
+```
+
+### IP 制限の使用例（Denylist 運用）
+
+```hcl
+module "apigateway_with_ip_denylist" {
+  source = "./modules/apigateway"
+
+  project = "sample"
+  name    = "sample-api-public"
+
+  # IP 制限（denylist）- 指定された IP からのアクセスを拒否
+  denied_source_ips = [
+    "192.0.2.100/32",  # 悪意のある IP
+    "192.0.2.0/24"     # ブロックしたいネットワーク
+  ]
+
+  # Lambda プロキシ統合
+  lambda_proxy_methods = [
+    {
+      path        = "/{proxy+}"
+      http_method = "ANY"
+      lambda_arn  = module.lambda_app.function_arn
+    }
+  ]
+}
+```
+
+### IP 制限の使用例（Allowlist + Denylist 併用）
+
+```hcl
+module "apigateway_with_mixed_ip_policy" {
+  source = "./modules/apigateway"
+
+  project = "sample"
+  name    = "sample-api-mixed"
+
+  # Allowlist（基本的に社内ネットワークのみ許可）
+  allowed_source_ips = [
+    "203.0.113.0/24"  # オフィスネットワーク
+  ]
+
+  # Denylist（社内ネットワーク内でも特定IPは拒否）
+  # Deny が優先されるため、このIPは社内ネットワークでもアクセス不可
+  denied_source_ips = [
+    "203.0.113.99/32"  # 社内の問題のあるIP
+  ]
+
+  # Lambda プロキシ統合
+  lambda_proxy_methods = [
+    {
+      path        = "/{proxy+}"
+      http_method = "ANY"
+      lambda_arn  = module.lambda_app.function_arn
+    }
+  ]
+}
+```
+
 ### API キー + 使用量プラン
 
 ```hcl
@@ -591,6 +695,10 @@ module "apigateway_full" {
   domain_name          = "api.example.com"
   acm_certificate_arn  = var.acm_arn
   zone_id              = var.zone_id
+
+  # IP 制限（オプション）
+  allowed_source_ips = ["203.0.113.0/24"]  # 社内ネットワークのみ許可
+  denied_source_ips  = []                  # 特定の拒否IPがあれば設定
 
   # API キー
   enable_api_key = true

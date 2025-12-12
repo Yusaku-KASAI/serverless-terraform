@@ -94,15 +94,17 @@ Serverless Framework を段階的に廃止し、
 │       │   │   ├── iam.tf
 │       │   │   ├── iam_destination.tf
 │       │   │   ├── lambda.tf
+│       │   │   ├── security_group.tf  # VPC 用デフォルト SG（条件付き作成）
 │       │   │   ├── outputs.tf
 │       │   │   ├── variables.tf
 │       │   │   └── README.md
 │       │   │
-│       │   ├── apigateway/         # API Gateway (REST API v1) + Lambda/SQS 統合
+│       │   ├── apigateway/         # API Gateway (REST API v1) + Lambda/SQS 統合 + IP 制限
 │       │   │   ├── apigateway.tf
 │       │   │   ├── cloudwatch.tf
+│       │   │   ├── data.tf           # AWS アカウント情報、リージョン情報
 │       │   │   ├── domain.tf
-│       │   │   ├── iam.tf
+│       │   │   ├── iam.tf            # IAM Role、リソースポリシー
 │       │   │   ├── stage.tf
 │       │   │   ├── outputs.tf
 │       │   │   ├── variables.tf
@@ -209,7 +211,8 @@ Serverless Framework を段階的に廃止し、
 |--------------|------|---------|
 | **ECR Repository** | Lambda コンテナイメージの保管場所 | Lambda モジュール |
 | **Lambda Function** | Lambda 本体（コンテナイメージ実行） | Lambda モジュール |
-| **API Gateway** | REST API (v1)、Lambda プロキシ統合・SQS 直接統合 | API Gateway モジュール |
+| **API Gateway** | REST API (v1)、Lambda プロキシ統合・SQS 直接統合、IP 制限 | API Gateway モジュール |
+| **API Gateway Resource Policy** | IP 制限（allowlist / denylist）のリソースポリシー | API Gateway モジュール |
 | **EventBridge Schedule** | cron / rate 形式でのスケジュール実行 | Lambda モジュール |
 | **SNS Topic（イベント）** | Lambda のトリガーとなる SNS トピック | **外部管理**（ARN を入力） |
 | **SQS Queue（イベント）** | Lambda のトリガーとなる SQS キュー | **外部管理**（ARN を入力） |
@@ -217,7 +220,8 @@ Serverless Framework を段階的に廃止し、
 | **CloudWatch Alarms** | Error / Throttle / Duration / Memory などのアラーム | 各モジュール |
 | **SNS Alarm Topic** | アラーム通知用 SNS トピック | 各モジュール |
 | **AWS Chatbot** | SNS → Slack 通知 | Chatbot モジュール |
-| **VPC / Subnet / SG** | Lambda の VPC 配置 | **外部管理**（ID を入力） |
+| **VPC / Subnet** | Lambda の VPC 配置 | **外部管理**（ID を入力） |
+| **Security Group** | Lambda 用セキュリティグループ | **外部管理** または Lambda モジュールで自動作成 |
 | **DLQ / Destination** | 非同期実行失敗時の送信先 SQS/SNS | **外部管理**（ARN を入力） |
 | **ACM 証明書** | カスタムドメイン用 TLS 証明書 | **外部管理**（ARN を入力） |
 | **Route53 Hosted Zone** | カスタムドメイン用 DNS ゾーン | **外部管理**（Zone ID を入力） |
@@ -246,8 +250,9 @@ Lambda 運用に必要なリソースを完全に自動化します。
 | **Fail Fast パターン** | リトライ 0 回、イベント有効期限 60 秒 |
 | **Lambda Insights 対応** | CloudWatch Lambda Insights による詳細監視 |
 | **X-Ray トレーシング** | 分散トレーシングによる性能分析（オプション） |
-| **包括的なアラーム** | Error / Throttle / Duration / Memory / Invocation の5種類 |
+| **包括的なアラーム** | Error / Throttle / Duration / Memory / Invocation の5種類（Invocation は条件付き作成） |
 | **イベントソース統合** | EventBridge / SNS / SQS トリガーの自動設定 |
+| **デフォルトSG自動作成** | VPC使用時にSecurity Groupを自動作成（空リスト指定時） |
 
 #### 4.1.3 管理するリソース
 
@@ -305,6 +310,7 @@ API Gateway 運用に必要なリソースを完全に自動化します。
 | **Lambda プロキシ統合** | Lambda 関数への自動プロキシ統合（AWS_PROXY） |
 | **SQS 直接統合** | SQS へのダイレクト統合（AWS タイプ、非プロキシ） |
 | **リソース階層自動生成** | パスから最大4階層までのリソースを自動作成 |
+| **IP 制限機能** | リソースポリシーによる allowlist / denylist IP 制限 |
 | **カスタムドメイン対応** | ACM 証明書 + Route53 レコードの自動設定 |
 | **API キー & 使用量プラン** | スロットル・クオータ制御 |
 | **包括的な監視** | 5XXError / 4XXError / Latency / Count のアラーム |
@@ -315,6 +321,7 @@ API Gateway 運用に必要なリソースを完全に自動化します。
 | リソース | 説明 |
 |---------|------|
 | **REST API 本体** | リージョナルエンドポイント（dualstack 対応） |
+| **リソースポリシー（IP 制限）** | allowlist / denylist による IP アクセス制御 |
 | **リソース階層** | パスから最大4階層までのリソースを自動生成 |
 | **Lambda プロキシ統合** | メソッド定義 + Lambda 統合 + Invoke Permission |
 | **SQS 直接統合** | メソッド定義 + SQS 統合 + IAM Role（SendMessage 権限） |
@@ -1107,7 +1114,10 @@ Lambda Invoke Permission（リソースポリシー）は **API Gateway モジ�
 | 項目 | 完了日 | 説明 |
 |------|-------|------|
 | **Lambda モジュール** | ✅ | ECR + Lambda + CloudWatch + IAM + イベント設定の完全モジュール化 |
+| **Lambda VPC SG 自動作成** | ✅ 2025-12 | VPC 使用時に Security Group を自動作成する機能を追加 |
+| **Lambda Invocation アラーム条件化** | ✅ 2025-12 | Invocation アラームを条件付きで作成（null 指定時は作成しない） |
 | **API Gateway モジュール** | ✅ | REST API (v1) + Lambda/SQS 統合 + カスタムドメイン + 監視 |
+| **API Gateway IP 制限** | ✅ 2025-12 | リソースポリシーによる IP 制限機能（allowlist / denylist）を追加 |
 | **Chatbot モジュール** | ✅ | Slack 通知の自動化 |
 | **CI/CD の整備** | ✅ | GitHub Actions による自動デプロイ（Docker ビルド → ECR プッシュ → Lambda 更新） |
 | **モジュールドキュメント** | ✅ | 各モジュールの包括的な README の整備 |

@@ -33,6 +33,7 @@ modules/
     iam_destination.tf     # DLQ / Destination 用の IAM ポリシー設定
     ecr.tf                 # ECR リポジトリ
     cloudwatch.tf          # LogGroup、MetricFilter、アラーム、SNS Topic
+    security_group.tf      # VPC 用デフォルト Security Group（条件付き作成）
     event_schedule.tf      # EventBridge スケジュールトリガー
     event_sns.tf           # SNS → Lambda トリガー
     event_sqs.tf           # SQS → Lambda イベントソースマッピング + IAM
@@ -141,6 +142,11 @@ modules/
   - Lambda Insights を使用する場合、VPC に NAT Gateway または VPC Endpoint（CloudWatch Logs / CloudWatch / ECR）が必要
   - VPC 自体の管理は外部で実施（このモジュールでは Subnet ID / Security Group ID を受け取るのみ）
 
+* **Security Group の自動作成**
+  - `use_vpc = true` かつ `security_group_ids = []`（空リスト）の場合、デフォルトの Security Group を自動作成
+  - デフォルト Security Group は全てのアウトバウンド通信を許可（`0.0.0.0/0`）
+  - インバウンドルールは設定されない（Lambda は通常インバウンド通信を受けない）
+
 ---
 
 ## 🏷 管理範囲
@@ -185,7 +191,7 @@ modules/
   - `Errors`（エラー・タイムアウト・OOM を含む）
   - `Throttles`（スロットリング）
   - `Duration`（実行時間）
-  - `Invocations`（実行回数）
+  - `Invocations`（実行回数、`invocation_alarm_threshold` が `null` でない場合のみ作成）
   - `Memory Usage`（メモリ使用率、Metric Math で算出）
 * **監視用 SNS Topic**（アラーム通知専用）
 
@@ -242,7 +248,7 @@ modules/
 |--------|---|-----------|------|
 | `use_vpc` | `bool` | `false` | Lambda を VPC 内で実行するかどうか |
 | `subnet_ids` | `list(string)` | `[]` | VPC Subnet IDs（`use_vpc = true` の場合必須） |
-| `security_group_ids` | `list(string)` | `[]` | Security Group IDs（`use_vpc = true` の場合必須） |
+| `security_group_ids` | `list(string)` | `[]` | VPC Lambda 用 security group IDs（`use_vpc = true` のとき必要。空リストの場合はデフォルトのSGを自動作成） |
 
 ### DLQ / Destination 設定
 
@@ -303,7 +309,7 @@ sqs_event_sources = [
 | `error_alarm_threshold` | `number` | `1` | Error アラーム閾値（直近3分の1分あたりの合計回数） |
 | `throttle_alarm_threshold` | `number` | `1` | Throttle アラーム閾値（直近3分の1分あたりの合計回数） |
 | `duration_alarm_threshold` | `number` | `5000` | Duration アラーム閾値（直近15分の最大ミリ秒数） |
-| `invocation_alarm_threshold` | `number` | `1000` | Invocation アラーム閾値（直近15分の5分あたりの合計回数） |
+| `invocation_alarm_threshold` | `number` | `null` | Invocation アラーム閾値（直近15分の5分あたりの合計回数）。`null` の場合はアラームを作成しない |
 | `memory_alarm_threshold` | `number` | `80` | メモリ使用率アラーム閾値（%、直近15分の最大値） |
 
 ### 機能フラグ
@@ -342,10 +348,10 @@ module "lambda_example" {
     STAGE = "prod"
   }
 
-  # VPC
+  # VPC（Security Group は指定、または空リストでデフォルトSG自動作成）
   use_vpc            = true
   subnet_ids         = ["subnet-xxxx"]
-  security_group_ids = ["sg-xxxx"]
+  security_group_ids = ["sg-xxxx"]  # 空リスト [] を指定するとデフォルトSGが自動作成される
 
   # EventBridge
   eventbridge_schedules = [
@@ -396,9 +402,10 @@ module "lambda_with_dlq" {
   destination_on_success_arn = aws_sqs_queue.lambda_success.arn
 
   # アラーム閾値のカスタマイズ
-  error_alarm_threshold    = 5
-  memory_alarm_threshold   = 90
-  duration_alarm_threshold = 12000  # 12秒
+  error_alarm_threshold      = 5
+  memory_alarm_threshold     = 90
+  duration_alarm_threshold   = 12000  # 12秒
+  invocation_alarm_threshold = null   # null に設定すると Invocation アラームは作成されない
 }
 ```
 
@@ -515,7 +522,7 @@ module "lambda_with_concurrency_limit" {
 |----------|------|
 | `log_group_name` | CloudWatch Logs のロググループ名 |
 | `alarm_sns_topic_arn` | Lambda アラーム通知用 SNS Topic ARN |
-| `cloudwatch_alarm_arns` | CloudWatch Metric Alarm ARN のマップ（`error`, `throttle`, `memory`, `duration`, `invocation`） |
+| `cloudwatch_alarm_arns` | CloudWatch Metric Alarm ARN のマップ（`error`, `throttle`, `memory`, `duration`, `invocation`。`invocation` は `invocation_alarm_threshold` が `null` でない場合のみ含まれる） |
 
 ### ECR
 

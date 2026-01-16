@@ -57,7 +57,7 @@ data "aws_iam_policy_document" "ecr_pull" {
     ]
 
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "aws:sourceArn"
       values   = ["arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.self.account_id}:function:*"]
     }

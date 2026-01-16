@@ -1,3 +1,10 @@
+locals {
+  # image_tag が既存のパターンでカバーされているかチェック
+  image_tag_is_latest  = var.image_tag == "latest"
+  image_tag_is_release = can(regex("^release.*", var.image_tag))
+  image_tag_is_covered = local.image_tag_is_latest || local.image_tag_is_release
+}
+
 resource "aws_ecr_repository" "this" {
   name                 = var.ecr_repository_name
   image_tag_mutability = "IMMUTABLE_WITH_EXCLUSION"
@@ -14,6 +21,15 @@ resource "aws_ecr_repository" "this" {
   image_tag_mutability_exclusion_filter {
     filter      = "release*"
     filter_type = "WILDCARD"
+  }
+
+  # image_tag が既存パターンでカバーされていない場合、追加で保護
+  dynamic "image_tag_mutability_exclusion_filter" {
+    for_each = local.image_tag_is_covered ? [] : [1]
+    content {
+      filter      = var.image_tag
+      filter_type = "WILDCARD"
+    }
   }
 
   tags = merge(var.tags, {
@@ -56,64 +72,84 @@ resource "aws_ecr_lifecycle_policy" "this" {
 
   # 参考：https://docs.aws.amazon.com/ja_jp/AmazonECR/latest/userguide/lifecycle_policy_examples.html#lp_example_multiple
   policy = jsonencode({
-    rules = [
-      {
-        # ルール1: latestタグは最新1つを保持（2つ目以降を削除）
-        rulePriority = 1,
-        description  = "Keep only 1 latest tag",
-        selection = {
-          tagStatus      = "tagged",
-          tagPatternList = ["latest"],
-          countType      = "imageCountMoreThan",
-          countNumber    = 1
+    rules = concat(
+      [
+        {
+          # ルール1: latestタグは最新1つを保持（2つ目以降を削除）
+          rulePriority = 1,
+          description  = "Keep only 1 latest tag",
+          selection = {
+            tagStatus      = "tagged",
+            tagPatternList = ["latest"],
+            countType      = "imageCountMoreThan",
+            countNumber    = 1
+          },
+          action = {
+            type = "expire"
+          }
         },
-        action = {
-          type = "expire"
-        }
-      },
-      {
-        # ルール2: release*タグは最新10個を保持（11個目以降を削除）
-        rulePriority = 2,
-        description  = "Keep last 10 release tags",
-        selection = {
-          tagStatus      = "tagged",
-          tagPatternList = ["release*"],
-          countType      = "imageCountMoreThan",
-          countNumber    = 10
+        {
+          # ルール2: release*タグは最新10個を保持（11個目以降を削除）
+          rulePriority = 2,
+          description  = "Keep last 10 release tags",
+          selection = {
+            tagStatus      = "tagged",
+            tagPatternList = ["release*"],
+            countType      = "imageCountMoreThan",
+            countNumber    = 10
+          },
+          action = {
+            type = "expire"
+          }
         },
-        action = {
-          type = "expire"
+      ],
+      # image_tag が既存パターンでカバーされていない場合、追加で保護
+      local.image_tag_is_covered ? [] : [
+        {
+          rulePriority = 3,
+          description  = "Keep only 1 ${var.image_tag} tag",
+          selection = {
+            tagStatus      = "tagged",
+            tagPatternList = [var.image_tag],
+            countType      = "imageCountMoreThan",
+            countNumber    = 1
+          },
+          action = {
+            type = "expire"
+          }
         }
-      },
-      {
-        # ルール3: untaggedイメージは1日で削除
-        rulePriority = 3,
-        description  = "Remove untagged images after 1 day",
-        selection = {
-          tagStatus   = "untagged",
-          countType   = "sinceImagePushed",
-          countUnit   = "days",
-          countNumber = 1
+      ],
+      [
+        {
+          # ルール: untaggedイメージは1日で削除
+          rulePriority = 10,
+          description  = "Remove untagged images after 1 day",
+          selection = {
+            tagStatus   = "untagged",
+            countType   = "sinceImagePushed",
+            countUnit   = "days",
+            countNumber = 1
+          },
+          action = {
+            type = "expire"
+          }
         },
-        action = {
-          type = "expire"
+        {
+          # ルール: その他の全イメージは90日で削除
+          # （ルール1,2,3で保護されたタグは除外される）
+          rulePriority = 20,
+          description  = "Expire other images older than 90 days",
+          selection = {
+            tagStatus   = "any",
+            countType   = "sinceImagePushed",
+            countUnit   = "days",
+            countNumber = 90
+          },
+          action = {
+            type = "expire"
+          }
         }
-      },
-      {
-        # ルール4: その他の全イメージは90日で削除
-        # （ルール1,2で保護されたlatest/release*は除外される）
-        rulePriority = 4,
-        description  = "Expire other images older than 90 days",
-        selection = {
-          tagStatus   = "any",
-          countType   = "sinceImagePushed",
-          countUnit   = "days",
-          countNumber = 90
-        },
-        action = {
-          type = "expire"
-        }
-      }
-    ]
+      ]
+    )
   })
 }
